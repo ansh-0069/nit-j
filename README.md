@@ -30,6 +30,22 @@ Share a room directly:
 https://your-app.streamlit.app/?room=ABC123
 ```
 
+## Admin
+
+Moderators can view all chats and join any room (bypasses PIN and capacity).
+
+1. Set the admin password in **Streamlit Cloud → App settings → Secrets**:
+
+```toml
+[admin]
+password = "your-strong-password-here"
+```
+
+2. Open the sidebar **Admin** section and log in
+3. Open **Admin panel** to see every room's chat log, or join/enter any room
+
+Locally, copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and set your password.
+
 ## Data
 
 SQLite database: `data/nit-joint.db` (created automatically on first run).

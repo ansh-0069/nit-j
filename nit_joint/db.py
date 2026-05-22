@@ -225,6 +225,67 @@ def list_rooms(vibe: str | None = None) -> list[dict[str, Any]]:
         return result
 
 
+def list_all_rooms_admin() -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT r.*, COUNT(m.id) as member_count,
+                      (SELECT COUNT(*) FROM messages msg WHERE msg.room_id = r.id) as message_count,
+                      (SELECT COUNT(*) FROM messages msg WHERE msg.room_id = r.id AND msg.type = 'user') as user_message_count
+               FROM rooms r
+               LEFT JOIN members m ON m.room_id = r.id
+               GROUP BY r.id
+               ORDER BY COALESCE(r.last_activity_at, r.created_at) DESC"""
+        ).fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["code"] = d["code"].upper()
+            d["vibe_tags"] = parse_vibe_tags(d.get("vibe_tags"))
+            d["has_pin"] = bool(d.get("join_pin"))
+            d["is_archived"] = bool(d.get("archived_at"))
+            result.append(d)
+        return result
+
+
+def admin_get_room_chats() -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rooms = list_all_rooms_admin()
+        for room in rooms:
+            msgs = conn.execute(
+                """SELECT id, author, content, type, created_at FROM messages
+                   WHERE room_id = ? ORDER BY created_at ASC""",
+                (room["id"],),
+            ).fetchall()
+            room["messages"] = [dict(m) for m in msgs]
+        return rooms
+
+
+def admin_join_room(code: str, name: str) -> dict[str, Any]:
+    """Join any room — bypasses PIN, capacity, and archived gate."""
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room:
+            raise ValueError("Room not found")
+
+        room_id = room["id"]
+        trimmed = name.strip()
+        existing = conn.execute(
+            "SELECT id FROM members WHERE room_id = ? AND name = ?",
+            (room_id, trimmed),
+        ).fetchone()
+
+        if not existing:
+            conn.execute(
+                "INSERT INTO members (room_id, name, status) VALUES (?, ?, ?)",
+                (room_id, trimmed, "here"),
+            )
+
+        _touch_room(conn, room_id)
+        room = get_room_by_code(conn, code)
+        assert room
+        return build_room_payload(conn, room)
+
+
 def create_room(
     title: str,
     host_name: str,
