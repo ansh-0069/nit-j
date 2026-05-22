@@ -7,7 +7,7 @@ import html
 
 import streamlit as st
 
-from nit_joint.app_state import app_base_url, is_host, is_member, user
+from nit_joint.app_state import app_base_url, go, go_room, is_host, is_member, user
 from nit_joint.admin import is_admin
 from nit_joint.constants import STATUS_LABELS
 from nit_joint.crew import crew_block
@@ -19,8 +19,8 @@ from nit_joint.db import (
     admin_join_room,
     admin_kick_member,
     claim_checklist,
+    close_session,
     delete_checklist_item,
-    end_room,
     get_room,
     has_user_pin,
     join_room,
@@ -34,7 +34,7 @@ from nit_joint.db import (
     update_playlist,
     update_status,
 )
-from nit_joint.helpers import get_countdown, grab_list_summary, names_match
+from nit_joint.helpers import grab_list_summary, names_match
 from nit_joint.recap import recap_for_share
 from nit_joint.share import build_invite_text, contact_whatsapp_url, export_split_text, upi_reminder, whatsapp_url
 from nit_joint.ui import chat_bubble, code_pill, music_player_embed
@@ -166,6 +166,60 @@ def render_chat_tab(code: str, room: dict, read_only: bool) -> None:
         if text:
             post_message(code, user(), text)
             st.rerun()
+
+
+def render_session_controls(code: str, room: dict) -> None:
+    """Host / admin: wrap up or permanently delete the sesh."""
+    me = user() or "Admin"
+    host = is_host(room, me)
+    admin = is_admin()
+    archived = room.get("is_archived")
+
+    if not host and not admin:
+        return
+
+    role = "Host" if host else "Admin"
+    with st.expander(f"⚙️ {role} — session controls"):
+        if host and not archived:
+            others = [m["name"] for m in room["members"] if not names_match(m["name"], room["host_name"])]
+            if others:
+                new_host = st.selectbox("Pass host to", others, key=f"pass_host_{code}")
+                if st.button("Pass host 👑", key=f"pass_host_btn_{code}"):
+                    transfer_host(code, me, new_host)
+                    st.rerun()
+
+        st.caption("Wrap up = read-only for 24h with recap · Delete = removed forever")
+
+        wrap_col, del_col = st.columns(2, gap="small")
+        if not archived:
+            if wrap_col.button("Wrap up sesh", key=f"wrap_{code}", use_container_width=True, type="primary"):
+                try:
+                    recap = close_session(code, me, delete=False, as_admin=admin and not host)
+                    st.session_state.last_wrap_recap = recap or ""
+                    st.session_state.room_code = ""
+                    go("home")
+                    st.rerun()
+                except Exception as e:
+                    st.error(str(e))
+        else:
+            wrap_col.caption("Already wrapped up")
+
+        confirm_key = f"confirm_delete_{code}"
+        st.checkbox("I understand — delete permanently", key=confirm_key)
+        if del_col.button(
+            "Delete sesh 🗑️",
+            key=f"delete_{code}",
+            use_container_width=True,
+            disabled=not st.session_state.get(confirm_key, False),
+        ):
+            try:
+                recap = close_session(code, me, delete=True, as_admin=admin and not host)
+                st.session_state.last_wrap_recap = recap or ""
+                st.session_state.room_code = ""
+                go("home")
+                st.rerun()
+            except Exception as e:
+                st.error(str(e))
 
 
 def render_grab_tab(code: str, room: dict, read_only: bool) -> None:

@@ -28,7 +28,6 @@ from nit_joint.db import (
     ban_name,
     create_room,
     create_room_from_template,
-    end_room,
     get_room,
     has_user_pin,
     init_db,
@@ -45,7 +44,6 @@ from nit_joint.db import (
     set_user_pin,
     stocked_blocks,
     submit_feedback,
-    transfer_host,
     unban_name,
     update_seller,
 )
@@ -60,6 +58,7 @@ from nit_joint.room_views import (
     render_playlist_bar,
     render_pullup_board,
     render_recap,
+    render_session_controls,
 )
 from nit_joint.scheduling import schedule_picker
 from nit_joint.share import build_invite_text, contact_whatsapp_url, whatsapp_url
@@ -413,18 +412,7 @@ def render_room() -> None:
         read_only = archived or (is_admin() and not is_member(room, user() or "Admin"))
 
         render_pullup_board(code, room, read_only)
-
-        if is_host(room, user()) and not read_only:
-            with st.expander("Host controls"):
-                others = [m["name"] for m in room["members"] if not names_match(m["name"], room["host_name"])]
-                if others and st.button("Pass host"):
-                    transfer_host(code, user(), others[0])
-                    st.rerun()
-                if st.button("Wrap up sesh"):
-                    recap = end_room(code, user(), permanent=False)
-                    st.session_state.last_wrap_recap = recap or ""
-                    go("home")
-                    st.rerun()
+        render_session_controls(code, room)
 
         tabs = st.tabs(["Yap 💬", "Grab list 🛒", "The tab 💸", "Entertainment 🎵", "Boys 👊"])
         with tabs[0]:

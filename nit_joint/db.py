@@ -362,15 +362,7 @@ def admin_kick_member(code: str, member_name: str) -> None:
 
 
 def admin_force_end(code: str, permanent: bool = True) -> None:
-    with get_conn() as conn:
-        room = get_room_by_code(conn, code)
-        if not room:
-            raise ValueError("Room not found")
-        if permanent:
-            conn.execute("DELETE FROM rooms WHERE id = ?", (room["id"],))
-        else:
-            conn.execute(f"UPDATE rooms SET archived_at = {SQL_NOW_IST} WHERE id = ?", (room["id"],))
-        _audit(conn, "force_end", "admin", code, "permanent" if permanent else "archive")
+    close_session(code, "Admin", delete=permanent, as_admin=True)
 
 
 def create_room_from_template(template_key: str, host_name: str, location: str | None = None, join_pin: str | None = None, scheduled_at: str | None = None) -> dict[str, Any]:
@@ -879,26 +871,49 @@ def update_playlist(code: str, url: str | None) -> None:
             _system_message(conn, room["id"], "Playlist link updated 🎵")
 
 
-def end_room(code: str, actor_name: str, permanent: bool = False) -> str | None:
+def close_session(
+    code: str,
+    actor_name: str,
+    *,
+    delete: bool = False,
+    as_admin: bool = False,
+) -> str | None:
+    """Archive (wrap up) or permanently delete a sesh. Host or admin only."""
     from nit_joint.recap import build_recap
 
     with get_conn() as conn:
         room = get_room_by_code(conn, code)
         if not room:
             raise ValueError("Room not found")
-        if room["host_name"].strip().lower() != actor_name.strip().lower():
-            raise ValueError("Only the host can end this sesh")
+
+        is_host_actor = room["host_name"].strip().lower() == actor_name.strip().lower()
+        if not is_host_actor and not as_admin:
+            raise ValueError("Only the host or admin can end this sesh")
+
         payload = build_room_payload(conn, room)
         recap = build_recap(payload)
-        if permanent:
+        actor = actor_name.strip() or "Admin"
+
+        if delete:
             conn.execute("DELETE FROM rooms WHERE id = ?", (room["id"],))
-        else:
-            conn.execute(
-                f"UPDATE rooms SET archived_at = {SQL_NOW_IST}, recap_text = ? WHERE id = ?",
-                (recap, room["id"]),
-            )
-            _system_message(conn, room["id"], f"{actor_name.strip()} wrapped up the sesh — read-only for 24h")
+            _audit(conn, "delete_sesh", actor, code, "admin" if as_admin else "host")
+            return recap
+
+        if room.get("archived_at"):
+            raise ValueError("Sesh is already wrapped up")
+
+        conn.execute(
+            f"UPDATE rooms SET archived_at = {SQL_NOW_IST}, recap_text = ? WHERE id = ?",
+            (recap, room["id"]),
+        )
+        who = "Admin" if as_admin and not is_host_actor else actor
+        _system_message(conn, room["id"], f"{who} wrapped up the sesh — read-only for 24h")
+        _audit(conn, "archive_sesh", actor, code, "admin" if as_admin else "host")
         return recap
+
+
+def end_room(code: str, actor_name: str, permanent: bool = False) -> str | None:
+    return close_session(code, actor_name, delete=permanent, as_admin=False)
 
 
 def transfer_host(code: str, actor_name: str, new_host: str) -> None:
