@@ -62,7 +62,7 @@ from nit_joint.helpers import get_countdown, is_starting_soon, names_match
 from nit_joint.share import build_invite_text, upi_reminder, whatsapp_url
 from nit_joint.templates import template_keys
 from nit_joint.time import format_time_ist
-from nit_joint.ui import PWA_TIP, inject_css
+from nit_joint.ui import PWA_TIP, code_pill, inject_css, sesh_title
 
 init_db()
 init_session()
@@ -219,21 +219,25 @@ def render_home() -> None:
     for room in list_rooms(vibe):
         cd = get_countdown(room.get("scheduled_at"))
         soon = is_starting_soon(room.get("scheduled_at"))
+        inv = build_invite_text(room["title"], room["code"], room.get("location"), app_base_url())
         with st.container(border=True):
-            st.markdown(f"**{room['title']}** `{room['code']}`" + (" 🔒" if room.get("has_pin") else ""))
+            st.markdown(sesh_title(room["title"], room["code"], has_pin=bool(room.get("has_pin"))), unsafe_allow_html=True)
+            meta_parts = []
             if room.get("location"):
-                st.caption(f"📍 {room['location']}")
+                meta_parts.append(f"📍 {room['location']}")
             if cd:
-                st.caption(f"⏰ {cd}" + (" · **Starting soon!**" if soon else ""))
+                meta_parts.append(f"⏰ {cd}" + (" · starting soon" if soon else ""))
             if room.get("last_activity_at"):
-                st.caption(f"Active · {format_time_ist(room['last_activity_at'])}")
-            c1, c2, c3 = st.columns(3)
-            if c1.button("Enter", key=f"e_{room['code']}"):
-                go_room(room["code"])
-                st.rerun()
-            inv = build_invite_text(room["title"], room["code"], room.get("location"), app_base_url())
-            c2.code(inv, language=None)
-            c3.link_button("WhatsApp", whatsapp_url(inv), key=f"wa_{room['code']}")
+                meta_parts.append(f"Active · {format_time_ist(room['last_activity_at'])}")
+            if meta_parts:
+                st.caption(" · ".join(meta_parts))
+            enter_col, share_col = st.columns([1, 1.4], gap="small")
+            with enter_col:
+                if st.button("Enter 👊", key=f"e_{room['code']}", use_container_width=True, type="primary"):
+                    go_room(room["code"])
+                    st.rerun()
+            with share_col:
+                st.link_button("Share on WhatsApp", whatsapp_url(inv), key=f"wa_{room['code']}", use_container_width=True)
 
 
 def render_room() -> None:
@@ -257,12 +261,15 @@ def render_room() -> None:
 
         st.markdown(f"## {room['title']}")
         inv = build_invite_text(room["title"], code, room.get("location"), app_base_url())
-        sc1, sc2, sc3 = st.columns(3)
-        sc1.code(code)
-        if sc2.button("Copy invite"):
-            st.toast("Invite copied")
-            st.code(inv)
-        sc3.link_button("WhatsApp share", whatsapp_url(inv))
+        st.markdown(
+            f'<div class="nj-share-strip">{code_pill(code, large=True)}</div>',
+            unsafe_allow_html=True,
+        )
+        share1, share2 = st.columns(2, gap="small")
+        share1.link_button("Share on WhatsApp", whatsapp_url(inv), use_container_width=True)
+        with share2.expander("Copy invite"):
+            st.text(inv)
+            st.caption("Select the text above to copy manually.")
 
         cd = get_countdown(room.get("scheduled_at"))
         if cd:
