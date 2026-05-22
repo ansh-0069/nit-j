@@ -1,0 +1,497 @@
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import uuid
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterator
+
+from nit_joint.helpers import checklist_for_vibes, compute_settle_up, generate_code, parse_vibe_tags
+
+DB_DIR = Path(__file__).resolve().parent.parent / "data"
+DB_PATH = DB_DIR / "nit-joint.db"
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS rooms (
+  id TEXT PRIMARY KEY,
+  code TEXT UNIQUE NOT NULL,
+  title TEXT NOT NULL,
+  host_name TEXT NOT NULL,
+  location TEXT,
+  description TEXT,
+  max_capacity INTEGER DEFAULT 10,
+  scheduled_at TEXT,
+  playlist_url TEXT,
+  vibe_tags TEXT,
+  join_pin TEXT,
+  archived_at TEXT,
+  last_activity_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS members (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  status TEXT DEFAULT 'here',
+  block TEXT,
+  joined_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(room_id, name),
+  FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id TEXT NOT NULL,
+  author TEXT NOT NULL,
+  content TEXT NOT NULL,
+  type TEXT DEFAULT 'user',
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS checklist (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id TEXT NOT NULL,
+  item TEXT NOT NULL,
+  claimed_by TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS expenses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id TEXT NOT NULL,
+  description TEXT NOT NULL,
+  amount REAL NOT NULL,
+  paid_by TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS sellers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  block TEXT,
+  contact TEXT,
+  available INTEGER DEFAULT 0,
+  note TEXT,
+  stocked_at TEXT,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+"""
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+@contextmanager
+def get_conn() -> Iterator[sqlite3.Connection]:
+    DB_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def init_db() -> None:
+    with get_conn() as conn:
+        conn.executescript(SCHEMA)
+        conn.execute(
+            """DELETE FROM rooms WHERE archived_at IS NOT NULL
+               AND datetime(archived_at, '+1 day') < datetime('now')"""
+        )
+
+
+def _row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    return dict(row) if row else None
+
+
+def _touch_room(conn: sqlite3.Connection, room_id: str) -> None:
+    conn.execute(
+        "UPDATE rooms SET last_activity_at = datetime('now') WHERE id = ?",
+        (room_id,),
+    )
+
+
+def _system_message(conn: sqlite3.Connection, room_id: str, content: str) -> None:
+    conn.execute(
+        "INSERT INTO messages (room_id, author, content, type) VALUES (?, ?, ?, ?)",
+        (room_id, "System", content, "system"),
+    )
+    _touch_room(conn, room_id)
+
+
+def get_room_by_code(conn: sqlite3.Connection, code: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM rooms WHERE code = ? COLLATE NOCASE",
+        (code.upper(),),
+    ).fetchone()
+    return _row_dict(row)
+
+
+def build_room_payload(conn: sqlite3.Connection, room: dict[str, Any]) -> dict[str, Any]:
+    room_id = room["id"]
+    members = [dict(r) for r in conn.execute(
+        "SELECT name, joined_at, COALESCE(status, 'here') as status, block FROM members WHERE room_id = ? ORDER BY joined_at",
+        (room_id,),
+    ).fetchall()]
+    messages = [dict(r) for r in conn.execute(
+        "SELECT * FROM messages WHERE room_id = ? ORDER BY created_at ASC",
+        (room_id,),
+    ).fetchall()]
+    checklist = [dict(r) for r in conn.execute(
+        "SELECT * FROM checklist WHERE room_id = ? ORDER BY created_at ASC",
+        (room_id,),
+    ).fetchall()]
+    expenses = [dict(r) for r in conn.execute(
+        "SELECT * FROM expenses WHERE room_id = ? ORDER BY created_at ASC",
+        (room_id,),
+    ).fetchall()]
+
+    total = sum(e["amount"] for e in expenses)
+    per_person = total / len(members) if members else 0
+    paid_map: dict[str, float] = {}
+    for e in expenses:
+        paid_map[e["paid_by"]] = paid_map.get(e["paid_by"], 0) + e["amount"]
+
+    balances = []
+    for m in members:
+        paid = paid_map.get(m["name"], 0)
+        balances.append(
+            {
+                "name": m["name"],
+                "paid": round(paid, 2),
+                "owes": round(per_person - paid, 2),
+            }
+        )
+
+    last_msg = conn.execute(
+        "SELECT created_at FROM messages WHERE room_id = ? ORDER BY created_at DESC LIMIT 1",
+        (room_id,),
+    ).fetchone()
+
+    return {
+        **room,
+        "code": room["code"].upper(),
+        "vibe_tags": parse_vibe_tags(room.get("vibe_tags")),
+        "has_pin": bool(room.get("join_pin")),
+        "is_archived": bool(room.get("archived_at")),
+        "members": members,
+        "messages": messages,
+        "checklist": checklist,
+        "expenses": expenses,
+        "last_message_at": last_msg["created_at"] if last_msg else None,
+        "split": {
+            "total": round(total, 2),
+            "perPerson": round(per_person, 2),
+            "memberCount": len(members),
+            "balances": balances,
+            "settleUp": compute_settle_up(balances),
+        },
+    }
+
+
+def list_rooms(vibe: str | None = None) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT r.*, COUNT(m.id) as member_count,
+                      (SELECT COUNT(*) FROM messages msg WHERE msg.room_id = r.id AND msg.type = 'user') as message_count,
+                      (SELECT MAX(created_at) FROM messages msg WHERE msg.room_id = r.id) as last_message_at
+               FROM rooms r
+               LEFT JOIN members m ON m.room_id = r.id
+               WHERE r.archived_at IS NULL
+               GROUP BY r.id
+               ORDER BY COALESCE(r.last_activity_at, r.created_at) DESC
+               LIMIT 50"""
+        ).fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["code"] = d["code"].upper()
+            d["vibe_tags"] = parse_vibe_tags(d.get("vibe_tags"))
+            d["has_pin"] = bool(d.get("join_pin"))
+            if vibe and vibe not in d["vibe_tags"]:
+                continue
+            result.append(d)
+        return result
+
+
+def create_room(
+    title: str,
+    host_name: str,
+    location: str | None = None,
+    description: str | None = None,
+    vibe_tags: list[str] | None = None,
+    join_pin: str | None = None,
+    scheduled_at: str | None = None,
+) -> dict[str, Any]:
+    tags = vibe_tags or []
+    with get_conn() as conn:
+        codes = {r[0] for r in conn.execute("SELECT code FROM rooms").fetchall()}
+        room_id = str(uuid.uuid4())[:12]
+        code = generate_code(codes)
+        conn.execute(
+            """INSERT INTO rooms (id, code, title, host_name, location, description, vibe_tags, join_pin, scheduled_at, last_activity_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+            (
+                room_id,
+                code,
+                title.strip(),
+                host_name.strip(),
+                location,
+                description,
+                json.dumps(tags) if tags else None,
+                join_pin,
+                scheduled_at,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO members (room_id, name, status) VALUES (?, ?, ?)",
+            (room_id, host_name.strip(), "here"),
+        )
+        _system_message(conn, room_id, f"{host_name.strip()} opened the joint")
+        for item in checklist_for_vibes(tags):
+            conn.execute("INSERT INTO checklist (room_id, item) VALUES (?, ?)", (room_id, item))
+        room = get_room_by_code(conn, code)
+        assert room
+        return build_room_payload(conn, room)
+
+
+def get_room(code: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room:
+            return None
+        return build_room_payload(conn, room)
+
+
+def join_room(code: str, name: str, pin: str | None = None, block: str | None = None) -> dict[str, Any]:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room:
+            raise ValueError("Room not found")
+        if room.get("archived_at"):
+            raise ValueError("This sesh is wrapped up")
+        if room.get("join_pin") and room["join_pin"] != (pin or "").strip():
+            raise ValueError("Wrong PIN")
+
+        room_id = room["id"]
+        trimmed = name.strip()
+        existing = conn.execute(
+            "SELECT id FROM members WHERE room_id = ? AND name = ?",
+            (room_id, trimmed),
+        ).fetchone()
+
+        if not existing:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM members WHERE room_id = ?",
+                (room_id,),
+            ).fetchone()[0]
+            if count >= room["max_capacity"]:
+                raise ValueError("Room is full")
+            conn.execute(
+                "INSERT INTO members (room_id, name, status, block) VALUES (?, ?, ?, ?)",
+                (room_id, trimmed, "here", block),
+            )
+            _system_message(conn, room_id, f"{trimmed} slid into the joint")
+
+        _touch_room(conn, room_id)
+        room = get_room_by_code(conn, code)
+        assert room
+        return build_room_payload(conn, room)
+
+
+def post_message(code: str, author: str, content: str) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room:
+            raise ValueError("Room not found")
+        if room.get("archived_at"):
+            raise ValueError("This sesh is wrapped up — read only")
+        conn.execute(
+            "INSERT INTO messages (room_id, author, content, type) VALUES (?, ?, ?, ?)",
+            (room["id"], author.strip(), content.strip(), "user"),
+        )
+        _touch_room(conn, room["id"])
+
+
+def update_status(code: str, name: str, status: str) -> None:
+    labels = {
+        "on_my_way": "is on the way 🚶",
+        "here": "pulled up ✅",
+        "running_late": "is running late ⏰",
+    }
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room or room.get("archived_at"):
+            raise ValueError("Cannot update status")
+        result = conn.execute(
+            "UPDATE members SET status = ? WHERE room_id = ? AND name = ?",
+            (status, room["id"], name.strip()),
+        )
+        if result.rowcount == 0:
+            raise ValueError("Member not found")
+        _system_message(conn, room["id"], f"{name.strip()} {labels[status]}")
+
+
+def claim_checklist(code: str, item_id: int, claimed_by: str | None) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room or room.get("archived_at"):
+            raise ValueError("Cannot update checklist")
+        existing = conn.execute("SELECT * FROM checklist WHERE id = ?", (item_id,)).fetchone()
+        conn.execute(
+            "UPDATE checklist SET claimed_by = ? WHERE id = ? AND room_id = ?",
+            (claimed_by, item_id, room["id"]),
+        )
+        if existing:
+            item = dict(existing)
+            if claimed_by:
+                _system_message(conn, room["id"], f"{claimed_by} claimed {item['item']} on the run sheet")
+            elif item.get("claimed_by"):
+                _system_message(conn, room["id"], f"{item['claimed_by']} unclaimed {item['item']}")
+
+
+def add_checklist_item(code: str, item: str) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room or room.get("archived_at"):
+            raise ValueError("Cannot add item")
+        conn.execute("INSERT INTO checklist (room_id, item) VALUES (?, ?)", (room["id"], item.strip()))
+        _system_message(conn, room["id"], f"Added to run sheet: {item.strip()}")
+
+
+def add_expense(code: str, description: str, amount: float, paid_by: str) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room or room.get("archived_at"):
+            raise ValueError("Cannot add expense")
+        conn.execute(
+            "INSERT INTO expenses (room_id, description, amount, paid_by) VALUES (?, ?, ?, ?)",
+            (room["id"], description.strip(), amount, paid_by.strip()),
+        )
+        _system_message(
+            conn,
+            room["id"],
+            f"{paid_by.strip()} logged ₹{round(amount)} for {description.strip()}",
+        )
+
+
+def delete_expense(code: str, expense_id: int) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room or room.get("archived_at"):
+            raise ValueError("Cannot delete expense")
+        conn.execute("DELETE FROM expenses WHERE id = ? AND room_id = ?", (expense_id, room["id"]))
+
+
+def update_playlist(code: str, url: str | None) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room or room.get("archived_at"):
+            raise ValueError("Cannot update playlist")
+        conn.execute("UPDATE rooms SET playlist_url = ? WHERE id = ?", (url, room["id"]))
+        if url:
+            _system_message(conn, room["id"], "Playlist link updated 🎵")
+
+
+def end_room(code: str, actor_name: str, permanent: bool = False) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room:
+            raise ValueError("Room not found")
+        if room["host_name"].strip().lower() != actor_name.strip().lower():
+            raise ValueError("Only the host can end this sesh")
+        if permanent:
+            conn.execute("DELETE FROM rooms WHERE id = ?", (room["id"],))
+        else:
+            conn.execute(
+                "UPDATE rooms SET archived_at = datetime('now') WHERE id = ?",
+                (room["id"],),
+            )
+            _system_message(conn, room["id"], f"{actor_name.strip()} wrapped up the sesh — read-only for 24h")
+
+
+def transfer_host(code: str, actor_name: str, new_host: str) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room or room.get("archived_at"):
+            raise ValueError("Cannot transfer host")
+        if room["host_name"].strip().lower() != actor_name.strip().lower():
+            raise ValueError("Only the host can transfer")
+        member = conn.execute(
+            "SELECT id FROM members WHERE room_id = ? AND name = ?",
+            (room["id"], new_host.strip()),
+        ).fetchone()
+        if not member:
+            raise ValueError("New host must be in the room")
+        conn.execute("UPDATE rooms SET host_name = ? WHERE id = ?", (new_host.strip(), room["id"]))
+        _system_message(conn, room["id"], f"{actor_name.strip()} passed host to {new_host.strip()} 👑")
+
+
+def list_sellers() -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM sellers ORDER BY available DESC, updated_at DESC"
+        ).fetchall()
+        return [
+            {
+                **dict(r),
+                "available": bool(r["available"]),
+            }
+            for r in rows
+        ]
+
+
+def register_seller(name: str, block: str | None, contact: str | None, available: bool, note: str | None) -> None:
+    with get_conn() as conn:
+        existing = conn.execute("SELECT id FROM sellers WHERE name = ?", (name.strip(),)).fetchone()
+        if existing:
+            raise ValueError("Seller already listed")
+        stocked = _now_iso() if available else None
+        conn.execute(
+            """INSERT INTO sellers (name, block, contact, available, note, stocked_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+            (name.strip(), block, contact, int(available), note, stocked),
+        )
+
+
+def update_seller(
+    seller_id: int,
+    actor_name: str,
+    available: bool | None = None,
+    note: str | None = None,
+    block: str | None = None,
+) -> None:
+    with get_conn() as conn:
+        seller = conn.execute("SELECT * FROM sellers WHERE id = ?", (seller_id,)).fetchone()
+        if not seller:
+            raise ValueError("Seller not found")
+        if seller["name"].lower() != actor_name.strip().lower():
+            raise ValueError("You can only update your own listing")
+        stocked = _now_iso() if available is True else (None if available is False else seller["stocked_at"])
+        avail = int(available) if available is not None else seller["available"]
+        conn.execute(
+            """UPDATE sellers SET block = COALESCE(?, block), available = ?, note = COALESCE(?, note),
+               stocked_at = ?, updated_at = datetime('now') WHERE id = ?""",
+            (block, avail, note, stocked, seller_id),
+        )
+
+
+def delete_seller(seller_id: int, actor_name: str) -> None:
+    with get_conn() as conn:
+        seller = conn.execute("SELECT * FROM sellers WHERE id = ?", (seller_id,)).fetchone()
+        if not seller:
+            raise ValueError("Seller not found")
+        if seller["name"].lower() != actor_name.strip().lower():
+            raise ValueError("You can only remove your own listing")
+        conn.execute("DELETE FROM sellers WHERE id = ?", (seller_id,))
