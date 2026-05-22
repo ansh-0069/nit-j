@@ -483,7 +483,7 @@ def render_admin() -> None:
 
     with tab_audit:
         for row in list_audit():
-            st.caption(f"[{row['created_at']}] {row['action']} · {row['actor']} → {row['target']} · {row['detail']}")
+            st.caption(f"[{format_time_ist(row['created_at'])}] {row['action']} · {row['actor']} → {row['target']} · {row['detail']}")
 
     with tab_ban:
         bn = st.text_input("Name to ban")
@@ -499,7 +499,7 @@ def render_admin() -> None:
 
     with tab_fb:
         for f in list_feedback():
-            st.markdown(f"_{f['created_at']}_ · {f.get('room_code') or 'general'}")
+            st.markdown(f"_{format_time_ist(f['created_at'])}_ · {f.get('room_code') or 'general'}")
             st.write(f["content"])
 
 

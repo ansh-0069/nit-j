@@ -1,4 +1,6 @@
 import { SQL_NOW_IST } from './time.js'
+
+const MESSAGE_LIMIT = 10
 const MESSAGE_WINDOW_MS = 60_000
 
 const messageBuckets = new Map<string, number[]>()
