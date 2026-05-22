@@ -796,16 +796,38 @@ def claim_checklist(code: str, item_id: int, claimed_by: str | None) -> None:
         if not room or room.get("archived_at"):
             raise ValueError("Cannot update checklist")
         existing = conn.execute("SELECT * FROM checklist WHERE id = ?", (item_id,)).fetchone()
+        if not existing:
+            raise ValueError("Item not found")
+        item = dict(existing)
+        prev = item.get("claimed_by")
         conn.execute(
             "UPDATE checklist SET claimed_by = ? WHERE id = ? AND room_id = ?",
             (claimed_by, item_id, room["id"]),
         )
-        if existing:
-            item = dict(existing)
-            if claimed_by:
-                _system_message(conn, room["id"], f"{claimed_by} claimed {item['item']} on the run sheet")
-            elif item.get("claimed_by"):
-                _system_message(conn, room["id"], f"{item['claimed_by']} unclaimed {item['item']}")
+        if claimed_by and prev and claimed_by != prev:
+            _system_message(conn, room["id"], f"{item['item']} reassigned from {prev} to {claimed_by}")
+        elif claimed_by and not prev:
+            _system_message(conn, room["id"], f"{claimed_by} claimed {item['item']} on the run sheet")
+        elif not claimed_by and prev:
+            _system_message(conn, room["id"], f"{prev} unclaimed {item['item']}")
+
+
+def delete_checklist_item(code: str, item_id: int, actor: str) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room or room.get("archived_at"):
+            raise ValueError("Cannot delete item")
+        existing = conn.execute(
+            "SELECT * FROM checklist WHERE id = ? AND room_id = ?",
+            (item_id, room["id"]),
+        ).fetchone()
+        if not existing:
+            raise ValueError("Item not found")
+        item = dict(existing)
+        conn.execute("DELETE FROM checklist WHERE id = ? AND room_id = ?", (item_id, room["id"]))
+        who = item.get("claimed_by")
+        suffix = f" (was {who})" if who else ""
+        _system_message(conn, room["id"], f"{actor.strip()} removed {item['item']}{suffix} from the run sheet")
 
 
 def add_checklist_item(code: str, item: str) -> None:

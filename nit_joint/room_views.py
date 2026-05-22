@@ -19,6 +19,7 @@ from nit_joint.db import (
     admin_join_room,
     admin_kick_member,
     claim_checklist,
+    delete_checklist_item,
     end_room,
     get_room,
     has_user_pin,
@@ -178,23 +179,62 @@ def render_grab_tab(code: str, room: dict, read_only: bool) -> None:
             refresh_checklist_suggestions(code)
             st.rerun()
 
+    member_names = [m["name"] for m in room["members"]]
+    me = user()
+
     for item in room["checklist"]:
         claimed = item.get("claimed_by")
-        label = f"{'✅' if claimed else '⬜'} {item['item']}" + (f" — {claimed}" if claimed else "")
-        st.markdown(label)
-        if not read_only:
-            c1, c2 = st.columns(2)
-            if not claimed and c1.button("Claim", key=f"c_{item['id']}"):
-                claim_checklist(code, item["id"], user())
+        item_id = item["id"]
+        with st.container(border=True):
+            st.markdown(
+                f"**{'✅' if claimed else '⬜'} {item['item']}**"
+                + (f"  ·  _{claimed}_" if claimed else "")
+            )
+            if read_only:
+                continue
+
+            if not claimed:
+                if st.button("Claim", key=f"c_{item_id}", use_container_width=True, type="primary"):
+                    claim_checklist(code, item_id, me)
+                    st.rerun()
+                if st.button("Remove item", key=f"d_{item_id}", use_container_width=True):
+                    delete_checklist_item(code, item_id, me)
+                    st.rerun()
+                continue
+
+            # Claimed — unclaim, reassign, or delete
+            can_manage = (
+                names_match(claimed, me)
+                or is_host(room, me)
+            )
+            if not can_manage:
+                st.caption("Only the assignee or host can change this")
+                continue
+
+            act1, act2, act3 = st.columns(3, gap="small")
+            if act1.button("Unclaim", key=f"u_{item_id}", use_container_width=True):
+                claim_checklist(code, item_id, None)
                 st.rerun()
-            if claimed:
-                if c1.button("Unclaim", key=f"u_{item['id']}"):
-                    claim_checklist(code, item["id"], None)
+
+            others = [n for n in member_names if not names_match(n, claimed)]
+            if others:
+                with act2:
+                    new_person = st.selectbox(
+                        "Reassign to",
+                        others,
+                        key=f"reassign_pick_{item_id}",
+                        label_visibility="collapsed",
+                    )
+                if act3.button("Reassign", key=f"r_{item_id}", use_container_width=True):
+                    claim_checklist(code, item_id, new_person)
                     st.rerun()
-                others = [m["name"] for m in room["members"] if not names_match(m["name"], claimed)]
-                if others and c2.button("Reassign", key=f"r_{item['id']}"):
-                    claim_checklist(code, item["id"], others[0])
-                    st.rerun()
+            else:
+                act2.caption("No one else to reassign")
+
+            if st.button("Remove item", key=f"del_{item_id}", use_container_width=True):
+                delete_checklist_item(code, item_id, me)
+                st.rerun()
+
     if not read_only:
         ni = st.text_input("Add item", key="ni")
         if st.button("Add", key="add_cl") and ni.strip():
