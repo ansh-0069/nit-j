@@ -44,6 +44,16 @@ def watch_url(video_id: str) -> str:
     return f"https://www.youtube.com/watch?v={video_id}"
 
 
+def normalize_api_key(api_key: str | None) -> str | None:
+    """Reject missing/placeholder keys (e.g. str(None) -> 'None')."""
+    if api_key is None:
+        return None
+    key = str(api_key).strip()
+    if not key or key.lower() in {"none", "null", "undefined"}:
+        return None
+    return key
+
+
 def search_music(query: str, *, max_results: int = 8, api_key: str | None = None) -> list[dict[str, Any]]:
     """Search YouTube for music videos."""
     query = query.strip()
@@ -54,10 +64,14 @@ def search_music(query: str, *, max_results: int = 8, api_key: str | None = None
     if direct_id:
         return [_video_stub(direct_id, title=query, channel="YouTube link")]
 
+    api_key = normalize_api_key(api_key)
     if api_key:
-        api_results = _search_via_api(query, max_results=max_results, api_key=api_key)
-        if api_results:
-            return api_results
+        try:
+            api_results = _search_via_api(query, max_results=max_results, api_key=api_key)
+            if api_results:
+                return api_results
+        except requests.RequestException:
+            pass
 
     return _search_via_html(query, max_results=max_results)
 

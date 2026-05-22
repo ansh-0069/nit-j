@@ -71,7 +71,7 @@ from nit_joint.ui import (
     music_player_embed,
     sesh_title,
 )
-from nit_joint.youtube import extract_video_id, search_music, watch_url
+from nit_joint.youtube import extract_video_id, normalize_api_key, search_music, watch_url
 
 init_db()
 init_session()
@@ -332,8 +332,7 @@ def render_home() -> None:
 
 def _youtube_api_key() -> str | None:
     try:
-        key = st.secrets.get("YOUTUBE_API_KEY")
-        return str(key).strip() or None
+        return normalize_api_key(st.secrets.get("YOUTUBE_API_KEY"))
     except Exception:
         return None
 
