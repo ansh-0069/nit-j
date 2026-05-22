@@ -1,0 +1,1 @@
+"""NIT-JOINT application package."""

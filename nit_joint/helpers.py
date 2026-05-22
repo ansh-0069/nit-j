@@ -6,6 +6,8 @@ import string
 from typing import Any
 
 from nit_joint.constants import VIBE_CHECKLIST_PRESETS, VIBE_TAGS
+from nit_joint.names import names_match
+from nit_joint.time import now_ist_dt, parse_stored_time
 
 CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -68,13 +70,6 @@ def compute_settle_up(balances: list[dict[str, float | str]]) -> list[dict[str, 
         if creditors[j]["amount"] < 0.01:
             j += 1
     return result
-
-
-def names_match(a: str, b: str) -> bool:
-    return a.strip().lower() == b.strip().lower()
-
-
-from nit_joint.time import now_ist_dt, parse_stored_time
 
 
 def get_countdown(scheduled_at: str | None) -> str | None:

@@ -10,8 +10,6 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from nit_joint.helpers import (
-    checklist_for_vibes,
-    checklist_for_vibes_and_size,
     compute_settle_up,
     generate_code,
     parse_vibe_tags,
@@ -184,14 +182,17 @@ def init_db() -> None:
         _expire_stale_plugs(conn)
         conn.execute(
             f"""DELETE FROM rooms WHERE archived_at IS NOT NULL
-               AND datetime(archived_at, '+1 day') < {SQL_NOW_IST}"""
+               AND datetime(archived_at, '+1 day') < {SQL_NOW_IST}""",
         )
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(expenses)").fetchall()}
     if "receipt_data" not in cols:
-        conn.execute("ALTER TABLE expenses ADD COLUMN receipt_data TEXT")
+        try:
+            conn.execute("ALTER TABLE expenses ADD COLUMN receipt_data TEXT")
+        except sqlite3.OperationalError:
+            pass
     room_cols = {r[1] for r in conn.execute("PRAGMA table_info(rooms)").fetchall()}
     for col, ddl in [
         ("join_mode", "ALTER TABLE rooms ADD COLUMN join_mode TEXT DEFAULT 'open'"),
@@ -201,14 +202,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("current_track_title", "ALTER TABLE rooms ADD COLUMN current_track_title TEXT"),
     ]:
         if col not in room_cols:
-            conn.execute(ddl)
+            try:
+                conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
     member_cols = {r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()}
     for col, ddl in [
         ("eta_minutes", "ALTER TABLE members ADD COLUMN eta_minutes INTEGER"),
         ("needs_pickup", "ALTER TABLE members ADD COLUMN needs_pickup INTEGER DEFAULT 0"),
     ]:
         if col not in member_cols:
-            conn.execute(ddl)
+            try:
+                conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
 
 
 PLUG_STALE_HOURS = 6
@@ -620,6 +627,8 @@ def create_room(
     extra_checklist: list[str] | None = None,
 ) -> dict[str, Any]:
     tags = vibe_tags or []
+    from nit_joint.helpers import checklist_for_vibes_and_size
+
     if join_mode == "pin" and not join_pin:
         raise ValueError("PIN required for PIN-only rooms")
     invite_token = str(uuid.uuid4())[:12] if join_mode == "invite" else None
@@ -1048,6 +1057,8 @@ def mark_settlement_paid(code: str, from_name: str, to_name: str, amount: float,
 
 
 def refresh_checklist_suggestions(code: str) -> None:
+    from nit_joint.helpers import checklist_for_vibes_and_size
+
     with get_conn() as conn:
         room = get_room_by_code(conn, code)
         if not room or room.get("archived_at"):

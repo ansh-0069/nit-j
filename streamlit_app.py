@@ -24,9 +24,11 @@ from nit_joint.db import (
     admin_force_end,
     admin_get_room_chats,
     admin_join_room,
+    admin_kick_member,
     ban_name,
     create_room,
     create_room_from_template,
+    end_room,
     get_room,
     has_user_pin,
     init_db,
@@ -47,7 +49,7 @@ from nit_joint.db import (
     unban_name,
     update_seller,
 )
-from nit_joint.helpers import active_vibe_filters, get_countdown, is_starting_soon
+from nit_joint.helpers import active_vibe_filters, get_countdown, is_starting_soon, names_match
 from nit_joint.room_views import (
     render_chat_tab,
     render_entertainment_tab,
@@ -64,13 +66,12 @@ from nit_joint.share import build_invite_text, contact_whatsapp_url, whatsapp_ur
 from nit_joint.templates import template_keys
 from nit_joint.time import format_time_ist
 from nit_joint.ui import PWA_TIP, hero_section, inject_css, inject_pwa, sesh_title
-from nit_joint.helpers import names_match
-from nit_joint.db import end_room, admin_kick_member
+
+st.set_page_config(page_title="NIT-JOINT", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
 
 init_db()
 init_session()
 
-st.set_page_config(page_title="NIT-JOINT", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
 st.markdown(inject_css(), unsafe_allow_html=True)
 st.markdown(inject_pwa(), unsafe_allow_html=True)
 

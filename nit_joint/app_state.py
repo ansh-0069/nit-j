@@ -5,7 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from nit_joint.admin import is_admin
-from nit_joint.helpers import names_match
+from nit_joint.names import names_match
 
 
 def init_session() -> None:
