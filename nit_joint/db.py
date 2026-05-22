@@ -150,7 +150,7 @@ def init_db() -> None:
         if "receipt_data" not in cols:
             conn.execute("ALTER TABLE expenses ADD COLUMN receipt_data TEXT")
         conn.execute(
-            """DELETE FROM rooms WHERE archived_at IS NOT NULL
+            f"""DELETE FROM rooms WHERE archived_at IS NOT NULL
                AND datetime(archived_at, '+1 day') < {SQL_NOW_IST}"""
         )
 
