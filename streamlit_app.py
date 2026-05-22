@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import html
 from datetime import timedelta
 
 import streamlit as st
@@ -62,7 +63,15 @@ from nit_joint.helpers import active_vibe_filters, get_countdown, is_starting_so
 from nit_joint.share import build_invite_text, upi_reminder, whatsapp_url
 from nit_joint.templates import template_keys
 from nit_joint.time import format_time_ist
-from nit_joint.ui import PWA_TIP, code_pill, inject_css, sesh_title
+from nit_joint.ui import (
+    PWA_TIP,
+    code_pill,
+    hero_section,
+    inject_css,
+    music_player_embed,
+    sesh_title,
+)
+from nit_joint.youtube import extract_video_id, search_music, watch_url
 
 init_db()
 init_session()
@@ -119,7 +128,12 @@ def render_sidebar() -> None:
                     st.session_state.plug_alerts_shown.add(block)
 
         st.divider()
-        for label, page in [("🏠 Home", "home"), ("🔌 The Plugs", "sellers"), ("📣 Feedback", "feedback")]:
+        for label, page in [
+            ("🏠 Home", "home"),
+            ("🎵 Entertainment", "entertainment"),
+            ("🔌 The Plugs", "sellers"),
+            ("📣 Feedback", "feedback"),
+        ]:
             if st.button(label, use_container_width=True):
                 go(page)
         if st.session_state.room_code and st.button(f"💨 Room {st.session_state.room_code}", use_container_width=True):
@@ -145,10 +159,72 @@ def render_sidebar() -> None:
             go("admin")
 
 
-def render_home() -> None:
-    st.header("NIT-JOINT 🌿")
-    st.markdown("Pick a dorm, roll a sesh, figure out who's bringing what and who owes who.")
+# ---------------------------------------------------------------------------
+# HERO / HOME PAGE — Cinematic flagship layout
+# ---------------------------------------------------------------------------
 
+FEATURES = [
+    {
+        "icon": "💨",
+        "title": "Instant Sesh Rooms",
+        "desc": "One tap to create a session. Share the 6-digit code and your crew pulls up in seconds.",
+    },
+    {
+        "icon": "🛒",
+        "title": "Smart Grab Lists",
+        "desc": "Auto-generated checklists by vibe. Claim items so nobody doubles up.",
+    },
+    {
+        "icon": "💸",
+        "title": "Split The Tab",
+        "desc": "Track expenses, scan receipts, auto-calculate who owes who. UPI reminders built in.",
+    },
+    {
+        "icon": "💬",
+        "title": "Live Yap Chat",
+        "desc": "Real-time messaging with push-style toast notifications. No app install needed.",
+    },
+    {
+        "icon": "🔌",
+        "title": "The Plugs Network",
+        "desc": "See who's stocked in your block. Set alerts so you never miss a restock.",
+    },
+    {
+        "icon": "👊",
+        "title": "Trusted Crew",
+        "desc": "Save your regulars. One-tap name switching and crew block auto-detection.",
+    },
+]
+
+
+def render_home() -> None:
+    # ── Cinematic hero ──
+    st.markdown(
+        hero_section(
+            title="NIT-JOINT",
+            subtitle="Pick a dorm. Roll a sesh. Figure out who's bringing what and who owes who.",
+            accent_word="JOINT",
+        ),
+        unsafe_allow_html=True,
+    )
+
+    # ── Feature cards — render as 3-column rows of individual cards ──
+    for row_start in range(0, len(FEATURES), 3):
+        row = FEATURES[row_start : row_start + 3]
+        cols = st.columns(len(row))
+        for col, feat in zip(cols, row):
+            with col:
+                st.markdown(
+                    f"""<div class="nj-feature-card">
+                        <span class="nj-feature-icon">{feat['icon']}</span>
+                        <h3>{feat['title']}</h3>
+                        <p>{feat['desc']}</p>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+
+    # ── Quick templates ──
+    st.markdown("---")
     st.subheader("Quick templates")
     tcols = st.columns(3)
     for i, key in enumerate(template_keys()):
@@ -252,6 +328,99 @@ def render_home() -> None:
                     st.rerun()
             with share_col:
                 st.link_button("Share on WhatsApp", whatsapp_url(inv), key=f"wa_{room['code']}", use_container_width=True)
+
+
+def _youtube_api_key() -> str | None:
+    try:
+        key = st.secrets.get("YOUTUBE_API_KEY")
+        return str(key).strip() or None
+    except Exception:
+        return None
+
+
+def _play_track(video_id: str, title: str) -> None:
+    st.session_state.entertainment_video_id = video_id
+    st.session_state.entertainment_now_playing = title
+
+
+def render_entertainment() -> None:
+    st.markdown(
+        hero_section(
+            title="Entertainment",
+            subtitle="Search music, queue a vibe, and play it right here.",
+            accent_word="Entertain",
+        ),
+        unsafe_allow_html=True,
+    )
+
+    if st.session_state.entertainment_video_id:
+        now = st.session_state.entertainment_now_playing
+        if now:
+            st.markdown(
+                f'<p class="nj-now-playing">Now playing · <strong>{html.escape(now)}</strong></p>',
+                unsafe_allow_html=True,
+            )
+        st.markdown(
+            music_player_embed(st.session_state.entertainment_video_id),
+            unsafe_allow_html=True,
+        )
+        clear_col, open_col = st.columns([1, 1], gap="small")
+        if clear_col.button("Clear player", use_container_width=True):
+            st.session_state.entertainment_video_id = ""
+            st.session_state.entertainment_now_playing = ""
+            st.rerun()
+        open_col.link_button(
+            "Open on YouTube",
+            watch_url(st.session_state.entertainment_video_id),
+            use_container_width=True,
+        )
+        st.markdown("---")
+
+    with st.form("music_search"):
+        query = st.text_input(
+            "Search for music",
+            value=st.session_state.entertainment_query,
+            placeholder="Artist, song, playlist vibe…",
+        )
+        if st.form_submit_button("Search 🎵", type="primary") and query.strip():
+            st.session_state.entertainment_query = query.strip()
+            try:
+                st.session_state.entertainment_results = search_music(
+                    query.strip(),
+                    api_key=_youtube_api_key(),
+                )
+            except Exception as e:
+                st.session_state.entertainment_results = []
+                st.error(f"Search failed: {e}")
+
+    with st.expander("Paste a YouTube link"):
+        pasted = st.text_input("YouTube URL or video ID", placeholder="https://youtube.com/watch?v=…")
+        if st.button("Play link", use_container_width=True) and pasted.strip():
+            vid = extract_video_id(pasted.strip())
+            if not vid:
+                st.error("Could not read that YouTube link")
+            else:
+                _play_track(vid, pasted.strip())
+                st.rerun()
+
+    results = st.session_state.entertainment_results
+    if st.session_state.entertainment_query and not results:
+        st.caption("No results — try another search.")
+    elif results:
+        st.subheader("Results")
+        for i, track in enumerate(results):
+            meta = " · ".join(p for p in [track.get("channel"), track.get("duration")] if p)
+            with st.container(border=True):
+                st.markdown(
+                    f"""<div class="nj-music-result">
+                        <div class="nj-music-title">{html.escape(track["title"])}</div>
+                        <div class="nj-music-meta">{html.escape(meta)}</div>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+                if st.button("Play ▶", key=f"play_{track['video_id']}_{i}", use_container_width=True, type="primary"):
+                    _play_track(track["video_id"], track["title"])
+                    st.rerun()
 
 
 def render_room() -> None:
@@ -531,6 +700,8 @@ elif page == "room":
     render_room()
 elif page == "sellers":
     render_sellers()
+elif page == "entertainment":
+    render_entertainment()
 elif page == "admin":
     render_admin()
 elif page == "feedback":

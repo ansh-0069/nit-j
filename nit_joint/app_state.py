@@ -19,6 +19,10 @@ def init_session() -> None:
         "last_msg_counts": {},
         "plug_alerts_shown": set(),
         "trusted_crew": [],
+        "entertainment_query": "",
+        "entertainment_video_id": "",
+        "entertainment_now_playing": "",
+        "entertainment_results": [],
     }
     for k, v in defaults.items():
         if k not in st.session_state:
