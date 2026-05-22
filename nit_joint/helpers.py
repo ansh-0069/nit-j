@@ -5,7 +5,7 @@ import random
 import string
 from typing import Any
 
-from nit_joint.constants import VIBE_CHECKLIST_PRESETS
+from nit_joint.constants import VIBE_CHECKLIST_PRESETS, VIBE_TAGS
 
 CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -108,3 +108,8 @@ def is_starting_soon(scheduled_at: str | None, within_minutes: int = 30) -> bool
         return False
     diff = (target - now_ist_dt()).total_seconds()
     return 0 < diff <= within_minutes * 60
+
+
+def active_vibe_filters(rooms: list[dict[str, Any]]) -> list[str]:
+    tags = [tag for tag in VIBE_TAGS if any(tag in r.get("vibe_tags", []) for r in rooms)]
+    return ["All"] + tags

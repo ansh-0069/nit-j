@@ -58,7 +58,7 @@ from nit_joint.db import (
     update_seller,
     update_status,
 )
-from nit_joint.helpers import get_countdown, is_starting_soon, names_match
+from nit_joint.helpers import active_vibe_filters, get_countdown, is_starting_soon, names_match
 from nit_joint.share import build_invite_text, upi_reminder, whatsapp_url
 from nit_joint.templates import template_keys
 from nit_joint.time import format_time_ist
@@ -211,12 +211,26 @@ def render_home() -> None:
                     st.rerun()
 
     st.subheader("Active seshes 🔥")
-    vibe = None if st.session_state.vibe_filter == "All" else st.session_state.vibe_filter
-    for f in ["All"] + list(VIBE_TAGS):
-        if st.button(f, key=f"f_{f}"):
-            st.session_state.vibe_filter = f
+    all_rooms = list_rooms(None)
+    filters = active_vibe_filters(all_rooms)
+    if st.session_state.vibe_filter not in filters:
+        st.session_state.vibe_filter = "All"
 
-    for room in list_rooms(vibe):
+    if len(filters) > 1:
+        st.session_state.vibe_filter = st.radio(
+            "Filter seshes",
+            filters,
+            index=filters.index(st.session_state.vibe_filter),
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+
+    vibe = None if st.session_state.vibe_filter == "All" else st.session_state.vibe_filter
+    rooms = [r for r in all_rooms if not vibe or vibe in r.get("vibe_tags", [])]
+
+    if not rooms:
+        st.caption("No active seshes right now — start one above 👆")
+    for room in rooms:
         cd = get_countdown(room.get("scheduled_at"))
         soon = is_starting_soon(room.get("scheduled_at"))
         inv = build_invite_text(room["title"], room["code"], room.get("location"), app_base_url())

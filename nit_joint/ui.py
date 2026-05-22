@@ -63,6 +63,27 @@ CUSTOM_CSS = """
         border-color: #25D366 !important;
         background: #25D36633 !important;
     }
+    div[data-testid="stRadio"] > div[role="radiogroup"] {
+        gap: 0.45rem;
+        flex-wrap: wrap;
+    }
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label {
+        background: #16142a !important;
+        border: 1px solid #ffffff18 !important;
+        border-radius: 999px !important;
+        padding: 0.3rem 0.85rem !important;
+        margin: 0 !important;
+        font-size: 0.85rem !important;
+        font-weight: 600 !important;
+    }
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {
+        background: #7CFF6B22 !important;
+        border-color: #7CFF6B55 !important;
+        color: #7CFF6B !important;
+    }
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label > div:first-child {
+        display: none !important;
+    }
 </style>
 """
 
