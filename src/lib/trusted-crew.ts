@@ -1,4 +1,5 @@
 import type { CrewMember } from '@/types'
+import { nowIst, parseStoredTime } from '@/lib/time'
 
 const CREW_KEY = 'nit-joint-crew'
 const MAX_CREW = 10
@@ -77,7 +78,7 @@ export function markRoomSeen(code: string, lastMessageAt?: string | null) {
   try {
     const raw = localStorage.getItem(SEEN_ROOMS_KEY)
     const map = raw ? (JSON.parse(raw) as Record<string, string>) : {}
-    map[code.toUpperCase()] = lastMessageAt ?? new Date().toISOString()
+    map[code.toUpperCase()] = lastMessageAt ?? nowIst()
     localStorage.setItem(SEEN_ROOMS_KEY, JSON.stringify(map))
   } catch {
     /* ignore */
@@ -91,5 +92,5 @@ export function countNewMessages(
   if (!lastMessageAt) return 0
   const seen = getRoomLastSeen(code)
   if (!seen) return 0
-  return new Date(lastMessageAt) > new Date(seen) ? 1 : 0
+  return parseStoredTime(lastMessageAt) > parseStoredTime(seen) ? 1 : 0
 }

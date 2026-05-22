@@ -18,6 +18,7 @@ import {
   updateMemberStatus,
   updateRoomPlaylist,
 } from '@/api'
+import { nowIst } from '@/lib/time'
 import type { Room } from '@/types'
 
 export function useRooms(vibe?: string) {
@@ -95,7 +96,7 @@ export function usePostMessage(code: string) {
               author,
               content,
               type: 'user',
-              created_at: new Date().toISOString(),
+              created_at: nowIst(),
             },
           ],
         })

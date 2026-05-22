@@ -10,6 +10,7 @@ import {
   purgeExpiredArchives,
   touchRoomActivity,
 } from './helpers.js'
+import { nowIst, SQL_NOW_IST } from './time.js'
 
 export function createApp() {
   const app = express()
@@ -143,7 +144,7 @@ export function createApp() {
   }
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, ts: new Date().toISOString() })
+    res.json({ ok: true, ts: nowIst(), timezone: 'Asia/Kolkata' })
   })
 
   app.get('/api/events', (_req, res) => {
@@ -234,7 +235,7 @@ export function createApp() {
 
     db.prepare(
       `INSERT INTO rooms (id, code, title, host_name, location, description, max_capacity, scheduled_at, vibe_tags, playlist_url, join_pin, last_activity_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${SQL_NOW_IST})`,
     ).run(
       id,
       code,
@@ -319,7 +320,7 @@ export function createApp() {
     if (permanent) {
       db.prepare('DELETE FROM rooms WHERE id = ?').run(roomId)
     } else {
-      db.prepare("UPDATE rooms SET archived_at = datetime('now') WHERE id = ?").run(roomId)
+      db.prepare(`UPDATE rooms SET archived_at = ${SQL_NOW_IST} WHERE id = ?`).run(roomId)
       insertSystemMessage(roomId, `${actorName.trim()} wrapped up the sesh — read-only for 24h`)
     }
 
@@ -687,7 +688,7 @@ export function createApp() {
     const result = db
       .prepare(
         `INSERT INTO sellers (name, block, contact, available, note, updated_at, stocked_at)
-         VALUES (?, ?, ?, ?, ?, datetime('now'), ?)`,
+         VALUES (?, ?, ?, ?, ?, ${SQL_NOW_IST}, ?)`,
       )
       .run(
         trimmed,
@@ -695,7 +696,7 @@ export function createApp() {
         contact?.trim() || null,
         isAvailable,
         note?.trim() || null,
-        isAvailable ? new Date().toISOString() : null,
+        isAvailable ? nowIst() : null,
       )
 
     const seller = db.prepare('SELECT * FROM sellers WHERE id = ?').get(result.lastInsertRowid)
@@ -727,13 +728,13 @@ export function createApp() {
     const nextAvailable = available !== undefined ? available : current.available
     const stockedAt =
       available === true
-        ? new Date().toISOString()
+        ? nowIst()
         : available === false
           ? null
           : current.stocked_at
 
     db.prepare(
-      `UPDATE sellers SET block = ?, contact = ?, available = ?, note = ?, updated_at = datetime('now'), stocked_at = ? WHERE id = ?`,
+      `UPDATE sellers SET block = ?, contact = ?, available = ?, note = ?, updated_at = ${SQL_NOW_IST}, stocked_at = ? WHERE id = ?`,
     ).run(
       block !== undefined ? block?.trim() || null : current.block,
       contact !== undefined ? contact?.trim() || null : current.contact,

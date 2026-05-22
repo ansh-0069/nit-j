@@ -1,4 +1,4 @@
-const MESSAGE_LIMIT = 10
+import { SQL_NOW_IST } from './time.js'
 const MESSAGE_WINDOW_MS = 60_000
 
 const messageBuckets = new Map<string, number[]>()
@@ -67,12 +67,12 @@ export function checklistForVibes(vibeTags: string[]): string[] {
 }
 
 export function touchRoomActivity(db: import('better-sqlite3').Database, roomId: string) {
-  db.prepare("UPDATE rooms SET last_activity_at = datetime('now') WHERE id = ?").run(roomId)
+  db.prepare(`UPDATE rooms SET last_activity_at = ${SQL_NOW_IST} WHERE id = ?`).run(roomId)
 }
 
 export function purgeExpiredArchives(db: import('better-sqlite3').Database) {
   db.prepare(
     `DELETE FROM rooms WHERE archived_at IS NOT NULL
-     AND datetime(archived_at, '+1 day') < datetime('now')`,
+     AND datetime(archived_at, '+1 day') < ${SQL_NOW_IST}`,
   ).run()
 }

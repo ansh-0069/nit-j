@@ -1,3 +1,5 @@
+import { IST_TIMEZONE, parseStoredTime } from '@/lib/time'
+
 const USER_KEY = 'nit-joint-user'
 
 export function getStoredUser(): string {
@@ -9,8 +11,9 @@ export function setStoredUser(name: string) {
 }
 
 export function formatTime(iso: string) {
-  const date = new Date(iso.includes('T') ? iso : `${iso.replace(' ', 'T')}Z`)
-  return date.toLocaleString(undefined, {
+  const date = parseStoredTime(iso)
+  return date.toLocaleString('en-IN', {
+    timeZone: IST_TIMEZONE,
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
@@ -28,7 +31,7 @@ export function formatMoney(amount: number) {
 
 export function getCountdown(scheduledAt: string | null): string | null {
   if (!scheduledAt) return null
-  const target = new Date(scheduledAt.includes('T') ? scheduledAt : scheduledAt)
+  const target = parseStoredTime(scheduledAt)
   const diff = target.getTime() - Date.now()
   if (diff <= 0) return 'Live now'
   const hours = Math.floor(diff / 3_600_000)
@@ -40,7 +43,7 @@ export function getCountdown(scheduledAt: string | null): string | null {
 
 export function isLiveSoon(scheduledAt: string | null): boolean {
   if (!scheduledAt) return false
-  const target = new Date(scheduledAt.includes('T') ? scheduledAt : scheduledAt)
+  const target = parseStoredTime(scheduledAt)
   const diff = target.getTime() - Date.now()
   return diff > 0 && diff < 2 * 3_600_000
 }
@@ -52,7 +55,7 @@ export function copySettleMessage(name: string, amount: number, roomTitle: strin
 
 export function formatRelativeTime(iso: string | null | undefined): string | null {
   if (!iso) return null
-  const date = new Date(iso.includes('T') ? iso : `${iso.replace(' ', 'T')}Z`)
+  const date = parseStoredTime(iso)
   const diffMs = Date.now() - date.getTime()
   if (diffMs < 0) return 'just now'
   const mins = Math.floor(diffMs / 60_000)

@@ -62,6 +62,7 @@ from nit_joint.db import (
 from nit_joint.helpers import get_countdown, is_starting_soon, names_match
 from nit_joint.share import build_invite_text, upi_reminder, whatsapp_url
 from nit_joint.templates import template_keys
+from nit_joint.time import format_time_ist
 from nit_joint.ui import PWA_TIP, inject_css
 
 init_db()
@@ -238,7 +239,7 @@ def render_home() -> None:
             if cd:
                 st.caption(f"⏰ {cd}" + (" · **Starting soon!**" if soon else ""))
             if room.get("last_activity_at"):
-                st.caption(f"Active · {room['last_activity_at']}")
+                st.caption(f"Active · {format_time_ist(room['last_activity_at'])}")
             c1, c2, c3, c4 = st.columns(4)
             if c1.button("Enter", key=f"e_{room['code']}"):
                 go_room(room["code"])

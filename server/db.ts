@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { SQL_NOW_IST } from './time.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const dbPath = path.join(__dirname, '..', 'data', 'nit-joint.db')
@@ -19,14 +20,14 @@ db.exec(`
     description TEXT,
     max_capacity INTEGER DEFAULT 10,
     scheduled_at TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (${SQL_NOW_IST})
   );
 
   CREATE TABLE IF NOT EXISTS members (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     room_id TEXT NOT NULL,
     name TEXT NOT NULL,
-    joined_at TEXT DEFAULT (datetime('now')),
+    joined_at TEXT DEFAULT (${SQL_NOW_IST}),
     UNIQUE(room_id, name),
     FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
   );
@@ -36,7 +37,7 @@ db.exec(`
     room_id TEXT NOT NULL,
     author TEXT NOT NULL,
     content TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TEXT DEFAULT (${SQL_NOW_IST}),
     FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
   );
 
@@ -45,7 +46,7 @@ db.exec(`
     room_id TEXT NOT NULL,
     item TEXT NOT NULL,
     claimed_by TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TEXT DEFAULT (${SQL_NOW_IST}),
     FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
   );
 
@@ -55,7 +56,7 @@ db.exec(`
     description TEXT NOT NULL,
     amount REAL NOT NULL,
     paid_by TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TEXT DEFAULT (${SQL_NOW_IST}),
     FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
   );
 
@@ -66,7 +67,7 @@ db.exec(`
     contact TEXT,
     available INTEGER DEFAULT 0,
     note TEXT,
-    updated_at TEXT DEFAULT (datetime('now'))
+    updated_at TEXT DEFAULT (${SQL_NOW_IST})
   );
 `)
 
@@ -87,7 +88,7 @@ function migrate() {
   }
   if (!roomColNames.has('last_activity_at')) {
     db.exec('ALTER TABLE rooms ADD COLUMN last_activity_at TEXT')
-    db.exec("UPDATE rooms SET last_activity_at = COALESCE(created_at, datetime('now'))")
+    db.exec(`UPDATE rooms SET last_activity_at = COALESCE(created_at, ${SQL_NOW_IST})`)
   }
 
   const memberCols = db.prepare('PRAGMA table_info(members)').all() as Array<{ name: string }>

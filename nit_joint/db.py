@@ -5,17 +5,17 @@ import os
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from nit_joint.postgres import init_postgres, using_postgres
 from pathlib import Path
 from typing import Any, Iterator
 
 from nit_joint.helpers import checklist_for_vibes, compute_settle_up, generate_code, parse_vibe_tags
-from nit_joint.postgres import init_postgres, using_postgres
+from nit_joint.time import SQL_NOW_IST, now_ist
 
 DB_DIR = Path(__file__).resolve().parent.parent / "data"
 DB_PATH = DB_DIR / "nit-joint.db"
 
-SCHEMA = """
+SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS rooms (
   id TEXT PRIMARY KEY,
   code TEXT UNIQUE NOT NULL,
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS rooms (
   join_pin TEXT,
   archived_at TEXT,
   last_activity_at TEXT,
-  created_at TEXT DEFAULT (datetime('now'))
+  created_at TEXT DEFAULT ({SQL_NOW_IST})
 );
 
 CREATE TABLE IF NOT EXISTS members (
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS members (
   name TEXT NOT NULL,
   status TEXT DEFAULT 'here',
   block TEXT,
-  joined_at TEXT DEFAULT (datetime('now')),
+  joined_at TEXT DEFAULT ({SQL_NOW_IST}),
   UNIQUE(room_id, name),
   FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
 );
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS messages (
   author TEXT NOT NULL,
   content TEXT NOT NULL,
   type TEXT DEFAULT 'user',
-  created_at TEXT DEFAULT (datetime('now')),
+  created_at TEXT DEFAULT ({SQL_NOW_IST}),
   FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
 );
 
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS checklist (
   room_id TEXT NOT NULL,
   item TEXT NOT NULL,
   claimed_by TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
+  created_at TEXT DEFAULT ({SQL_NOW_IST}),
   FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
 );
 
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS expenses (
   description TEXT NOT NULL,
   amount REAL NOT NULL,
   paid_by TEXT NOT NULL,
-  created_at TEXT DEFAULT (datetime('now')),
+  created_at TEXT DEFAULT ({SQL_NOW_IST}),
   FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
 );
 
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS sellers (
   available INTEGER DEFAULT 0,
   note TEXT,
   stocked_at TEXT,
-  updated_at TEXT DEFAULT (datetime('now'))
+  updated_at TEXT DEFAULT ({SQL_NOW_IST})
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -90,20 +90,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
   actor TEXT,
   target TEXT,
   detail TEXT,
-  created_at TEXT DEFAULT (datetime('now'))
+  created_at TEXT DEFAULT ({SQL_NOW_IST})
 );
 
 CREATE TABLE IF NOT EXISTS banned_names (
   name TEXT PRIMARY KEY,
   reason TEXT,
-  banned_at TEXT DEFAULT (datetime('now'))
+  banned_at TEXT DEFAULT ({SQL_NOW_IST})
 );
 
 CREATE TABLE IF NOT EXISTS feedback (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   content TEXT NOT NULL,
   room_code TEXT,
-  created_at TEXT DEFAULT (datetime('now'))
+  created_at TEXT DEFAULT ({SQL_NOW_IST})
 );
 
 CREATE TABLE IF NOT EXISTS trusted_crew (
@@ -116,14 +116,14 @@ CREATE TABLE IF NOT EXISTS plug_watch (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   watcher_name TEXT NOT NULL,
   block TEXT NOT NULL,
-  created_at TEXT DEFAULT (datetime('now')),
+  created_at TEXT DEFAULT ({SQL_NOW_IST}),
   UNIQUE(watcher_name, block)
 );
 """
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return now_ist()
 
 
 @contextmanager
@@ -151,7 +151,7 @@ def init_db() -> None:
             conn.execute("ALTER TABLE expenses ADD COLUMN receipt_data TEXT")
         conn.execute(
             """DELETE FROM rooms WHERE archived_at IS NOT NULL
-               AND datetime(archived_at, '+1 day') < datetime('now')"""
+               AND datetime(archived_at, '+1 day') < {SQL_NOW_IST}"""
         )
 
 
@@ -295,7 +295,7 @@ def admin_force_end(code: str, permanent: bool = True) -> None:
         if permanent:
             conn.execute("DELETE FROM rooms WHERE id = ?", (room["id"],))
         else:
-            conn.execute("UPDATE rooms SET archived_at = datetime('now') WHERE id = ?", (room["id"],))
+            conn.execute(f"UPDATE rooms SET archived_at = {SQL_NOW_IST} WHERE id = ?", (room["id"],))
         _audit(conn, "force_end", "admin", code, "permanent" if permanent else "archive")
 
 
@@ -322,7 +322,7 @@ def _row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 def _touch_room(conn: sqlite3.Connection, room_id: str) -> None:
     conn.execute(
-        "UPDATE rooms SET last_activity_at = datetime('now') WHERE id = ?",
+        f"UPDATE rooms SET last_activity_at = {SQL_NOW_IST} WHERE id = ?",
         (room_id,),
     )
 
@@ -506,8 +506,8 @@ def create_room(
         room_id = str(uuid.uuid4())[:12]
         code = generate_code(codes)
         conn.execute(
-            """INSERT INTO rooms (id, code, title, host_name, location, description, vibe_tags, join_pin, scheduled_at, last_activity_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+            f"""INSERT INTO rooms (id, code, title, host_name, location, description, vibe_tags, join_pin, scheduled_at, last_activity_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, {SQL_NOW_IST})""",
             (
                 room_id,
                 code,
@@ -689,7 +689,7 @@ def end_room(code: str, actor_name: str, permanent: bool = False) -> None:
             conn.execute("DELETE FROM rooms WHERE id = ?", (room["id"],))
         else:
             conn.execute(
-                "UPDATE rooms SET archived_at = datetime('now') WHERE id = ?",
+                f"UPDATE rooms SET archived_at = {SQL_NOW_IST} WHERE id = ?",
                 (room["id"],),
             )
             _system_message(conn, room["id"], f"{actor_name.strip()} wrapped up the sesh — read-only for 24h")
@@ -733,8 +733,8 @@ def register_seller(name: str, block: str | None, contact: str | None, available
             raise ValueError("Seller already listed")
         stocked = _now_iso() if available else None
         conn.execute(
-            """INSERT INTO sellers (name, block, contact, available, note, stocked_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+            f"""INSERT INTO sellers (name, block, contact, available, note, stocked_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, {SQL_NOW_IST})""",
             (name.strip(), block, contact, int(available), note, stocked),
         )
 
@@ -755,8 +755,8 @@ def update_seller(
         stocked = _now_iso() if available is True else (None if available is False else seller["stocked_at"])
         avail = int(available) if available is not None else seller["available"]
         conn.execute(
-            """UPDATE sellers SET block = COALESCE(?, block), available = ?, note = COALESCE(?, note),
-               stocked_at = ?, updated_at = datetime('now') WHERE id = ?""",
+            f"""UPDATE sellers SET block = COALESCE(?, block), available = ?, note = COALESCE(?, note),
+               stocked_at = ?, updated_at = {SQL_NOW_IST} WHERE id = ?""",
             (block, avail, note, stocked, seller_id),
         )
 

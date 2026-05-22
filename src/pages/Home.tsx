@@ -23,6 +23,7 @@ import { CopyCodeBadge } from '@/components/room/copy-code-badge'
 import { HOSTEL_BLOCKS, VIBE_TAGS } from '@/lib/constants'
 import { createRoomSchema, joinRoomSchema } from '@/lib/schemas'
 import { getCountdown, isLiveSoon, formatActivityPulse, formatRelativeTime } from '@/lib/storage'
+import { parseStoredTime } from '@/lib/time'
 import { getRoomLastSeen } from '@/lib/trusted-crew'
 import { cn } from '@/lib/cn'
 import type { z } from 'zod'
@@ -363,7 +364,7 @@ export default function Home() {
             const hasNew =
               room.last_message_at &&
               getRoomLastSeen(room.code) &&
-              new Date(room.last_message_at) > new Date(getRoomLastSeen(room.code)!)
+              parseStoredTime(room.last_message_at) > parseStoredTime(getRoomLastSeen(room.code)!)
             return (
               <FadeIn key={room.id} delay={0.05 * i}>
                 <motion.div whileHover={{ y: -2 }}>

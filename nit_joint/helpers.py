@@ -74,19 +74,18 @@ def names_match(a: str, b: str) -> bool:
     return a.strip().lower() == b.strip().lower()
 
 
+from nit_joint.time import now_ist_dt, parse_stored_time
+
+
 def get_countdown(scheduled_at: str | None) -> str | None:
     if not scheduled_at:
         return None
-    from datetime import datetime, timezone
 
     try:
-        if "T" in scheduled_at:
-            target = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
-        else:
-            target = datetime.strptime(scheduled_at[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        target = parse_stored_time(scheduled_at)
     except ValueError:
         return None
-    now = datetime.now(timezone.utc)
+    now = now_ist_dt()
     diff = (target - now).total_seconds()
     if diff <= 0:
         return "Live now"
@@ -102,14 +101,10 @@ def get_countdown(scheduled_at: str | None) -> str | None:
 def is_starting_soon(scheduled_at: str | None, within_minutes: int = 30) -> bool:
     if not scheduled_at:
         return False
-    from datetime import datetime, timezone
 
     try:
-        if "T" in scheduled_at:
-            target = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
-        else:
-            target = datetime.strptime(scheduled_at[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        target = parse_stored_time(scheduled_at)
     except ValueError:
         return False
-    diff = (target - datetime.now(timezone.utc)).total_seconds()
+    diff = (target - now_ist_dt()).total_seconds()
     return 0 < diff <= within_minutes * 60
