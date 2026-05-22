@@ -2,7 +2,7 @@
 
 Private friends-group app for coordinating college seshes — rooms, chat, grab lists, expense splits, and campus seller board.
 
-**Stack:** Python 3.10+ · [Streamlit](https://streamlit.io) · SQLite
+**Stack:** Python 3.10+ · [Streamlit](https://streamlit.io) · SQLite (optional Postgres via `DATABASE_URL`)
 
 ## Run locally
 
@@ -11,63 +11,85 @@ pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
-Open the URL shown (usually `http://localhost:8501`).
+Copy `.streamlit/secrets.toml.example` → `.streamlit/secrets.toml` and set your admin password.
 
 ## Deploy on Streamlit Cloud
 
-1. Push this repo to GitHub
-2. Go to [share.streamlit.io](https://share.streamlit.io) and connect the repo
-3. Set **Main file path** to `streamlit_app.py`
-4. Deploy
+1. Push to GitHub
+2. [share.streamlit.io](https://share.streamlit.io) → connect repo
+3. Main file: `streamlit_app.py`
+4. Add secrets (see example file)
 
-No Node.js or build step required.
+## Features
 
-### Deep links
+| Area | What's included |
+|------|-----------------|
+| **Rooms** | Create/join, PIN, vibe templates, scheduled countdown, QR + WhatsApp share |
+| **Chat** | Live refresh toggle, new-message toast, rate limits |
+| **Grab list** | Vibe-based presets, claim items |
+| **The tab** | Split + settle-up, UPI reminder copy, receipt photo upload |
+| **Pull-up board** | On my way / here / running late status per member |
+| **Plugs** | Seller board, stocked timestamps, block watch alerts |
+| **Crew** | Trusted names + blocks in sidebar |
+| **Admin** | All chats, join any room, kick/ban/delete, audit log, force-end |
+| **Feedback** | Anonymous reports to admin |
+| **Bot** | Optional Telegram bot (`python -m nit_joint.bot`) |
 
-Share a room directly:
+## Secrets
+
+```toml
+[admin]
+password = "your-strong-password"
+# passwords = "admin1-pass, admin2-pass"  # multi-admin
+
+APP_URL = "https://nitjoint.streamlit.app"
+
+# Optional persistent DB (Postgres — Supabase/Neon)
+# DATABASE_URL = "postgresql://..."
+
+# TELEGRAM_BOT_TOKEN = "..."
+```
+
+## Deep links
 
 ```
 https://your-app.streamlit.app/?room=ABC123
 ```
 
-## Admin
+## Data persistence
 
-Moderators can view all chats and join any room (bypasses PIN and capacity).
+- **Local / default:** SQLite in `data/nit-joint.db`
+- **Streamlit Cloud:** filesystem may reset — set `DATABASE_URL` to hosted Postgres for production
+- Postgres schema auto-creates when `DATABASE_URL` is set (migration path; SQLite remains default for reads/writes unless fully migrated)
 
-1. Set the admin password in **Streamlit Cloud → App settings → Secrets**:
+## Optional Telegram bot
 
-```toml
-[admin]
-password = "your-strong-password-here"
+```bash
+export TELEGRAM_BOT_TOKEN=...
+python -m nit_joint.bot
 ```
 
-2. Open the sidebar **Admin** section and log in
-3. Open **Admin panel** to see every room's chat log, or join/enter any room
+Commands: `/stocked`, `/sesh CODE`, `/help`
 
-Locally, copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and set your password.
+## Legacy React app
 
-## Data
+The original React + Express stack in `src/` and `server/` is optional — not needed for Streamlit deployment.
 
-SQLite database: `data/nit-joint.db` (created automatically on first run).
-
-> **Note:** On Streamlit Cloud, the filesystem may reset when the app reboots. For persistent production data, swap SQLite for a hosted DB (e.g. Supabase, PlanetScale) later.
+```bash
+npm run dev
+```
 
 ## Project layout
 
 ```
-streamlit_app.py    # Main UI (Streamlit Cloud entry point)
-requirements.txt    # Python dependencies
+streamlit_app.py       # Main UI
 nit_joint/
-  db.py             # Database + business logic
-  constants.py      # Blocks, vibes, presets
-  helpers.py        # Utilities
-data/               # SQLite file (gitignored)
-```
-
-## Legacy React app
-
-The original React + Express frontend lives in `src/` and `server/`. It is no longer required for deployment — use the Streamlit app above.
-
-```bash
-npm run dev   # old stack (optional)
+  db.py                # Database + business logic
+  admin.py             # Multi-admin auth
+  share.py             # WhatsApp / invite / UPI
+  crew.py              # Trusted crew (session)
+  templates.py         # Quick sesh templates
+  ui.py                # Theme CSS
+  bot.py               # Telegram bot (optional)
+  postgres.py          # Optional Postgres init
 ```

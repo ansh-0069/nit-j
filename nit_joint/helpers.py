@@ -72,3 +72,44 @@ def compute_settle_up(balances: list[dict[str, float | str]]) -> list[dict[str, 
 
 def names_match(a: str, b: str) -> bool:
     return a.strip().lower() == b.strip().lower()
+
+
+def get_countdown(scheduled_at: str | None) -> str | None:
+    if not scheduled_at:
+        return None
+    from datetime import datetime, timezone
+
+    try:
+        if "T" in scheduled_at:
+            target = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
+        else:
+            target = datetime.strptime(scheduled_at[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    now = datetime.now(timezone.utc)
+    diff = (target - now).total_seconds()
+    if diff <= 0:
+        return "Live now"
+    mins = int(diff // 60)
+    hours = mins // 60
+    if hours > 24:
+        return f"In {hours // 24}d {hours % 24}h"
+    if hours > 0:
+        return f"In {hours}h {mins % 60}m"
+    return f"In {mins}m"
+
+
+def is_starting_soon(scheduled_at: str | None, within_minutes: int = 30) -> bool:
+    if not scheduled_at:
+        return False
+    from datetime import datetime, timezone
+
+    try:
+        if "T" in scheduled_at:
+            target = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
+        else:
+            target = datetime.strptime(scheduled_at[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    diff = (target - datetime.now(timezone.utc)).total_seconds()
+    return 0 < diff <= within_minutes * 60

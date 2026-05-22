@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from nit_joint.helpers import checklist_for_vibes, compute_settle_up, generate_code, parse_vibe_tags
+from nit_joint.postgres import init_postgres, using_postgres
 
 DB_DIR = Path(__file__).resolve().parent.parent / "data"
 DB_PATH = DB_DIR / "nit-joint.db"
@@ -82,6 +83,42 @@ CREATE TABLE IF NOT EXISTS sellers (
   stocked_at TEXT,
   updated_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  action TEXT NOT NULL,
+  actor TEXT,
+  target TEXT,
+  detail TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS banned_names (
+  name TEXT PRIMARY KEY,
+  reason TEXT,
+  banned_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  content TEXT NOT NULL,
+  room_code TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS trusted_crew (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  block TEXT
+);
+
+CREATE TABLE IF NOT EXISTS plug_watch (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  watcher_name TEXT NOT NULL,
+  block TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(watcher_name, block)
+);
 """
 
 
@@ -103,12 +140,180 @@ def get_conn() -> Iterator[sqlite3.Connection]:
 
 
 def init_db() -> None:
+    try:
+        init_postgres()
+    except Exception:
+        pass
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(expenses)").fetchall()]
+        if "receipt_data" not in cols:
+            conn.execute("ALTER TABLE expenses ADD COLUMN receipt_data TEXT")
         conn.execute(
             """DELETE FROM rooms WHERE archived_at IS NOT NULL
                AND datetime(archived_at, '+1 day') < datetime('now')"""
         )
+
+
+def _audit(conn: sqlite3.Connection, action: str, actor: str | None, target: str | None, detail: str | None) -> None:
+    conn.execute(
+        "INSERT INTO audit_log (action, actor, target, detail) VALUES (?, ?, ?, ?)",
+        (action, actor, target, detail),
+    )
+
+
+def is_banned(name: str) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM banned_names WHERE lower(name) = lower(?)",
+            (name.strip(),),
+        ).fetchone()
+        return row is not None
+
+
+def _check_banned(name: str) -> None:
+    if is_banned(name):
+        raise ValueError("You are not allowed to join or post")
+
+
+def log_audit(action: str, actor: str | None, target: str | None = None, detail: str | None = None) -> None:
+    with get_conn() as conn:
+        _audit(conn, action, actor, target, detail)
+
+
+def list_audit(limit: int = 100) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM audit_log ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()]
+
+
+def ban_name(name: str, reason: str | None = None) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO banned_names (name, reason) VALUES (?, ?)",
+            (name.strip(), reason),
+        )
+        _audit(conn, "ban", "admin", name.strip(), reason)
+
+
+def unban_name(name: str) -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM banned_names WHERE lower(name) = lower(?)", (name.strip(),))
+        _audit(conn, "unban", "admin", name.strip(), None)
+
+
+def list_banned() -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM banned_names ORDER BY banned_at DESC").fetchall()]
+
+
+def submit_feedback(content: str, room_code: str | None = None) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO feedback (content, room_code) VALUES (?, ?)",
+            (content.strip(), room_code),
+        )
+
+
+def list_feedback(limit: int = 50) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM feedback ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()]
+
+
+def add_plug_watch(watcher_name: str, block: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO plug_watch (watcher_name, block) VALUES (?, ?)",
+            (watcher_name.strip(), block.strip()),
+        )
+
+
+def remove_plug_watch(watcher_name: str, block: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM plug_watch WHERE lower(watcher_name) = lower(?) AND block = ?",
+            (watcher_name.strip(), block.strip()),
+        )
+
+
+def list_plug_watch(watcher_name: str) -> list[str]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT block FROM plug_watch WHERE lower(watcher_name) = lower(?)",
+            (watcher_name.strip(),),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+
+def stocked_blocks() -> set[str]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT block FROM sellers WHERE available = 1 AND block IS NOT NULL"
+        ).fetchall()
+        return {r[0] for r in rows if r[0]}
+
+
+def save_trusted_crew_db(name: str, block: str | None = None) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO trusted_crew (name, block) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET block = excluded.block",
+            (name.strip(), block),
+        )
+
+
+def list_trusted_crew_db() -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute("SELECT name, block FROM trusted_crew ORDER BY name").fetchall()]
+
+
+def admin_delete_message(message_id: int) -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+        _audit(conn, "delete_message", "admin", str(message_id), None)
+
+
+def admin_kick_member(code: str, member_name: str) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room:
+            raise ValueError("Room not found")
+        conn.execute(
+            "DELETE FROM members WHERE room_id = ? AND name = ?",
+            (room["id"], member_name.strip()),
+        )
+        _audit(conn, "kick", "admin", member_name.strip(), code)
+
+
+def admin_force_end(code: str, permanent: bool = True) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room:
+            raise ValueError("Room not found")
+        if permanent:
+            conn.execute("DELETE FROM rooms WHERE id = ?", (room["id"],))
+        else:
+            conn.execute("UPDATE rooms SET archived_at = datetime('now') WHERE id = ?", (room["id"],))
+        _audit(conn, "force_end", "admin", code, "permanent" if permanent else "archive")
+
+
+def create_room_from_template(template_key: str, host_name: str, location: str | None = None, join_pin: str | None = None, scheduled_at: str | None = None) -> dict[str, Any]:
+    from nit_joint.templates import SESH_TEMPLATES
+
+    tpl = SESH_TEMPLATES.get(template_key)
+    if not tpl:
+        raise ValueError("Unknown template")
+    return create_room(
+        title=tpl["title"],
+        host_name=host_name,
+        location=location,
+        description=tpl.get("description"),
+        vibe_tags=tpl.get("vibe_tags"),
+        join_pin=join_pin,
+        scheduled_at=scheduled_at,
+    )
 
 
 def _row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -336,6 +541,7 @@ def get_room(code: str) -> dict[str, Any] | None:
 
 
 def join_room(code: str, name: str, pin: str | None = None, block: str | None = None) -> dict[str, Any]:
+    _check_banned(name)
     with get_conn() as conn:
         room = get_room_by_code(conn, code)
         if not room:
@@ -372,6 +578,7 @@ def join_room(code: str, name: str, pin: str | None = None, block: str | None = 
 
 
 def post_message(code: str, author: str, content: str) -> None:
+    _check_banned(author)
     with get_conn() as conn:
         room = get_room_by_code(conn, code)
         if not room:
@@ -431,14 +638,20 @@ def add_checklist_item(code: str, item: str) -> None:
         _system_message(conn, room["id"], f"Added to run sheet: {item.strip()}")
 
 
-def add_expense(code: str, description: str, amount: float, paid_by: str) -> None:
+def add_expense(
+    code: str,
+    description: str,
+    amount: float,
+    paid_by: str,
+    receipt_data: str | None = None,
+) -> None:
     with get_conn() as conn:
         room = get_room_by_code(conn, code)
         if not room or room.get("archived_at"):
             raise ValueError("Cannot add expense")
         conn.execute(
-            "INSERT INTO expenses (room_id, description, amount, paid_by) VALUES (?, ?, ?, ?)",
-            (room["id"], description.strip(), amount, paid_by.strip()),
+            "INSERT INTO expenses (room_id, description, amount, paid_by, receipt_data) VALUES (?, ?, ?, ?, ?)",
+            (room["id"], description.strip(), amount, paid_by.strip(), receipt_data),
         )
         _system_message(
             conn,
