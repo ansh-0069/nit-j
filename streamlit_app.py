@@ -1,9 +1,7 @@
-"""NIT-JOINT — Streamlit app."""
+"""NIT-JOINT — Streamlit app (primary UI)."""
 
 from __future__ import annotations
 
-import base64
-import html
 from datetime import timedelta
 
 import streamlit as st
@@ -20,24 +18,17 @@ from nit_joint.app_state import (
     user,
 )
 from nit_joint.constants import HOSTEL_BLOCKS, STATUS_LABELS, VIBE_TAGS
-from nit_joint.crew import add_crew, crew_block, get_crew_from_session, remove_crew
+from nit_joint.crew import add_crew, get_crew_from_session, remove_crew
 from nit_joint.db import (
-    add_checklist_item,
-    add_expense,
     add_plug_watch,
-    admin_delete_message,
     admin_force_end,
     admin_get_room_chats,
     admin_join_room,
-    admin_kick_member,
     ban_name,
-    claim_checklist,
     create_room,
     create_room_from_template,
-    delete_expense,
-    delete_seller,
-    end_room,
     get_room,
+    has_user_pin,
     init_db,
     join_room,
     list_audit,
@@ -46,44 +37,97 @@ from nit_joint.db import (
     list_plug_watch,
     list_rooms,
     list_sellers,
-    log_audit,
-    post_message,
     register_seller,
     remove_plug_watch,
     save_trusted_crew_db,
+    set_user_pin,
     stocked_blocks,
     submit_feedback,
     transfer_host,
     unban_name,
-    update_playlist,
     update_seller,
-    update_status,
 )
-from nit_joint.helpers import active_vibe_filters, get_countdown, is_starting_soon, names_match
-from nit_joint.share import build_invite_text, upi_reminder, whatsapp_url
+from nit_joint.helpers import active_vibe_filters, get_countdown, is_starting_soon
+from nit_joint.room_views import (
+    render_chat_tab,
+    render_entertainment_tab,
+    render_expense_tab,
+    render_grab_tab,
+    render_invite_strip,
+    render_join_panel,
+    render_playlist_bar,
+    render_pullup_board,
+    render_recap,
+)
+from nit_joint.scheduling import schedule_picker
+from nit_joint.share import build_invite_text, contact_whatsapp_url, whatsapp_url
 from nit_joint.templates import template_keys
 from nit_joint.time import format_time_ist
-from nit_joint.ui import (
-    PWA_TIP,
-    code_pill,
-    hero_section,
-    inject_css,
-    music_player_embed,
-    sesh_title,
-)
-from nit_joint.youtube import extract_video_id, normalize_api_key, search_music, watch_url
+from nit_joint.ui import PWA_TIP, hero_section, inject_css, inject_pwa, sesh_title
+from nit_joint.helpers import names_match
+from nit_joint.db import end_room, admin_kick_member
 
 init_db()
 init_session()
 
 st.set_page_config(page_title="NIT-JOINT", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
 st.markdown(inject_css(), unsafe_allow_html=True)
+st.markdown(inject_pwa(), unsafe_allow_html=True)
 
 
 def check_new_messages(room_code: str, count: int) -> bool:
     prev = st.session_state.last_msg_counts.get(room_code, 0)
     st.session_state.last_msg_counts[room_code] = count
     return st.session_state.live_mode and count > prev and prev > 0
+
+
+def render_onboarding() -> bool:
+    """First-run wizard. Returns True if onboarding blocks main home."""
+    if st.session_state.onboarding_done:
+        return False
+    st.markdown(
+        """<div class="nj-onboard-card nj-fade-in">
+        <h2>Welcome to NIT-JOINT 🌿</h2>
+        <p class="nj-hero-sub">Set up in 3 taps — name, crew, first sesh.</p></div>""",
+        unsafe_allow_html=True,
+    )
+    step = st.session_state.onboarding_step
+    if step == 0:
+        st.subheader("1 · Your name")
+        name = st.text_input("What do the boys call you?", value=st.session_state.user_name)
+        pin = st.text_input("Member PIN (optional — locks your name)", type="password", max_chars=8)
+        if st.button("Next →", type="primary") and name.strip():
+            st.session_state.user_name = name.strip()
+            if pin.strip():
+                try:
+                    set_user_pin(name.strip(), pin.strip())
+                except Exception as e:
+                    st.error(str(e))
+                    return True
+            st.session_state.onboarding_step = 1
+            st.rerun()
+    elif step == 1:
+        st.subheader("2 · Trusted crew (optional)")
+        st.caption("Save regulars for one-tap join")
+        cn = st.text_input("Add a name")
+        cb = st.selectbox("Block", [""] + HOSTEL_BLOCKS, format_func=lambda x: x or "—")
+        if st.button("Add to crew") and cn.strip():
+            add_crew(st.session_state, cn, cb or None)
+            save_trusted_crew_db(cn, cb or None)
+            st.rerun()
+        if st.button("Next →", type="primary"):
+            st.session_state.onboarding_step = 2
+            st.rerun()
+    else:
+        st.subheader("3 · Start or join")
+        c1, c2 = st.columns(2)
+        if c1.button("Start a sesh 🔥", use_container_width=True, type="primary"):
+            st.session_state.onboarding_done = True
+            st.rerun()
+        if c2.button("Browse active seshes", use_container_width=True):
+            st.session_state.onboarding_done = True
+            st.rerun()
+    return True
 
 
 def render_sidebar() -> None:
@@ -93,8 +137,19 @@ def render_sidebar() -> None:
         st.session_state.user_name = st.text_input(
             "Your name",
             value=st.session_state.user_name,
-            placeholder="Optional — needed to join/chat",
+            placeholder="Needed to join / chat",
         )
+        if user():
+            mp = st.text_input("Member PIN (optional)", type="password", max_chars=8, key="sidebar_pin")
+            if st.button("Save PIN", use_container_width=True) and mp.strip():
+                try:
+                    set_user_pin(user(), mp.strip())
+                    st.success("PIN saved")
+                except Exception as e:
+                    st.error(str(e))
+            if has_user_pin(user()):
+                st.caption("🔒 PIN active for your name")
+
         st.session_state.live_mode = st.toggle("Live updates", value=st.session_state.live_mode)
 
         with st.expander("📱 Add to home screen"):
@@ -118,7 +173,6 @@ def render_sidebar() -> None:
                     st.session_state.user_name = c["name"]
                     st.rerun()
 
-        # Plug watch alerts
         if user():
             watched = list_plug_watch(user())
             stocked = stocked_blocks()
@@ -128,12 +182,7 @@ def render_sidebar() -> None:
                     st.session_state.plug_alerts_shown.add(block)
 
         st.divider()
-        for label, page in [
-            ("🏠 Home", "home"),
-            ("🎵 Entertainment", "entertainment"),
-            ("🔌 The Plugs", "sellers"),
-            ("📣 Feedback", "feedback"),
-        ]:
+        for label, page in [("🏠 Home", "home"), ("🔌 The Plugs", "sellers"), ("📣 Feedback", "feedback")]:
             if st.button(label, use_container_width=True):
                 go(page)
         if st.session_state.room_code and st.button(f"💨 Room {st.session_state.room_code}", use_container_width=True):
@@ -159,46 +208,21 @@ def render_sidebar() -> None:
             go("admin")
 
 
-# ---------------------------------------------------------------------------
-# HERO / HOME PAGE — Cinematic flagship layout
-# ---------------------------------------------------------------------------
-
 FEATURES = [
-    {
-        "icon": "💨",
-        "title": "Instant Sesh Rooms",
-        "desc": "One tap to create a session. Share the 6-digit code and your crew pulls up in seconds.",
-    },
-    {
-        "icon": "🛒",
-        "title": "Smart Grab Lists",
-        "desc": "Auto-generated checklists by vibe. Claim items so nobody doubles up.",
-    },
-    {
-        "icon": "💸",
-        "title": "Split The Tab",
-        "desc": "Track expenses, scan receipts, auto-calculate who owes who. UPI reminders built in.",
-    },
-    {
-        "icon": "💬",
-        "title": "Live Yap Chat",
-        "desc": "Real-time messaging with push-style toast notifications. No app install needed.",
-    },
-    {
-        "icon": "🔌",
-        "title": "The Plugs Network",
-        "desc": "See who's stocked in your block. Set alerts so you never miss a restock.",
-    },
-    {
-        "icon": "👊",
-        "title": "Trusted Crew",
-        "desc": "Save your regulars. One-tap name switching and crew block auto-detection.",
-    },
+    {"icon": "💨", "title": "Instant Sesh Rooms", "desc": "One tap to create. Share code or link — crew pulls up fast."},
+    {"icon": "🛒", "title": "Smart Grab Lists", "desc": "Auto lists by vibe + headcount. Claim, unclaim, reassign."},
+    {"icon": "💸", "title": "Split The Tab", "desc": "Split by attendees, mark UPI paid, export & share."},
+    {"icon": "💬", "title": "Live Yap Chat", "desc": "Bubble chat with live refresh and toast alerts."},
+    {"icon": "🎵", "title": "Room Entertainment", "desc": "Shared music queue in every sesh — search & play together."},
+    {"icon": "🔌", "title": "The Plugs Network", "desc": "Stocked board with alerts, contact, auto-expire."},
 ]
 
 
 def render_home() -> None:
-    # ── Cinematic hero ──
+    if not st.session_state.onboarding_done:
+        if render_onboarding():
+            return
+
     st.markdown(
         hero_section(
             title="NIT-JOINT",
@@ -208,7 +232,6 @@ def render_home() -> None:
         unsafe_allow_html=True,
     )
 
-    # ── Feature cards — render as 3-column rows of individual cards ──
     for row_start in range(0, len(FEATURES), 3):
         row = FEATURES[row_start : row_start + 3]
         cols = st.columns(len(row))
@@ -223,7 +246,6 @@ def render_home() -> None:
                     unsafe_allow_html=True,
                 )
 
-    # ── Quick templates ──
     st.markdown("---")
     st.subheader("Quick templates")
     tcols = st.columns(3)
@@ -248,9 +270,19 @@ def render_home() -> None:
             vibes = st.multiselect("Vibe", VIBE_TAGS)
             block = st.selectbox("Block", [""] + HOSTEL_BLOCKS, format_func=lambda x: x or "Pick")
             location = st.text_input("Or type location", placeholder="MBH A · 204")
-            when = st.text_input("When (ISO)", placeholder="2026-05-23T20:00")
+            when = schedule_picker(key_prefix="create")
             notes = st.text_area("Notes")
-            pin = st.text_input("Join PIN (4 digits, optional)", max_chars=4)
+            join_mode = st.selectbox(
+                "Who can join",
+                ["open", "pin", "crew_only", "invite"],
+                format_func=lambda x: {
+                    "open": "Anyone with code",
+                    "pin": "PIN required",
+                    "crew_only": "Trusted crew only",
+                    "invite": "Invite link only",
+                }[x],
+            )
+            pin = st.text_input("Join PIN (4 digits)", max_chars=4) if join_mode == "pin" else None
             if st.form_submit_button("Let's go 🔥", type="primary"):
                 if not user():
                     st.error("Set your name in the sidebar")
@@ -266,8 +298,9 @@ def render_home() -> None:
                             location=location or block or None,
                             description=notes or None,
                             vibe_tags=vibes,
-                            join_pin=pin or None,
-                            scheduled_at=when or None,
+                            join_pin=pin if join_mode == "pin" else None,
+                            scheduled_at=when,
+                            join_mode=join_mode,
                         )
                         go_room(room["code"])
                         st.rerun()
@@ -288,24 +321,21 @@ def render_home() -> None:
 
     st.subheader("Active seshes 🔥")
     all_rooms = list_rooms(None)
+    if not all_rooms:
+        st.info("No active seshes — be the first to start one above 👆")
+        return
+
     filters = active_vibe_filters(all_rooms)
     if st.session_state.vibe_filter not in filters:
         st.session_state.vibe_filter = "All"
-
     if len(filters) > 1:
         st.session_state.vibe_filter = st.radio(
-            "Filter seshes",
-            filters,
-            index=filters.index(st.session_state.vibe_filter),
-            horizontal=True,
-            label_visibility="collapsed",
+            "Filter seshes", filters, index=filters.index(st.session_state.vibe_filter), horizontal=True, label_visibility="collapsed"
         )
 
     vibe = None if st.session_state.vibe_filter == "All" else st.session_state.vibe_filter
     rooms = [r for r in all_rooms if not vibe or vibe in r.get("vibe_tags", [])]
 
-    if not rooms:
-        st.caption("No active seshes right now — start one above 👆")
     for room in rooms:
         cd = get_countdown(room.get("scheduled_at"))
         soon = is_starting_soon(room.get("scheduled_at"))
@@ -321,105 +351,19 @@ def render_home() -> None:
                 meta_parts.append(f"Active · {format_time_ist(room['last_activity_at'])}")
             if meta_parts:
                 st.caption(" · ".join(meta_parts))
-            enter_col, share_col = st.columns([1, 1.4], gap="small")
+            enter_col, share_col, link_col = st.columns([1, 1.2, 1.2], gap="small")
             with enter_col:
                 if st.button("Enter 👊", key=f"e_{room['code']}", use_container_width=True, type="primary"):
                     go_room(room["code"])
                     st.rerun()
             with share_col:
-                st.link_button("Share on WhatsApp", whatsapp_url(inv), key=f"wa_{room['code']}", use_container_width=True)
-
-
-def _youtube_api_key() -> str | None:
-    try:
-        return normalize_api_key(st.secrets.get("YOUTUBE_API_KEY"))
-    except Exception:
-        return None
-
-
-def _play_track(video_id: str, title: str) -> None:
-    st.session_state.entertainment_video_id = video_id
-    st.session_state.entertainment_now_playing = title
-
-
-def render_entertainment() -> None:
-    st.markdown(
-        hero_section(
-            title="Entertainment",
-            subtitle="Search music, queue a vibe, and play it right here.",
-            accent_word="Entertain",
-        ),
-        unsafe_allow_html=True,
-    )
-
-    if st.session_state.entertainment_video_id:
-        now = st.session_state.entertainment_now_playing
-        if now:
-            st.markdown(
-                f'<p class="nj-now-playing">Now playing · <strong>{html.escape(now)}</strong></p>',
-                unsafe_allow_html=True,
-            )
-        st.markdown(
-            music_player_embed(st.session_state.entertainment_video_id),
-            unsafe_allow_html=True,
-        )
-        clear_col, open_col = st.columns([1, 1], gap="small")
-        if clear_col.button("Clear player", use_container_width=True):
-            st.session_state.entertainment_video_id = ""
-            st.session_state.entertainment_now_playing = ""
-            st.rerun()
-        open_col.link_button(
-            "Open on YouTube",
-            watch_url(st.session_state.entertainment_video_id),
-            use_container_width=True,
-        )
-        st.markdown("---")
-
-    with st.form("music_search"):
-        query = st.text_input(
-            "Search for music",
-            value=st.session_state.entertainment_query,
-            placeholder="Artist, song, playlist vibe…",
-        )
-        if st.form_submit_button("Search 🎵", type="primary") and query.strip():
-            st.session_state.entertainment_query = query.strip()
-            try:
-                st.session_state.entertainment_results = search_music(
-                    query.strip(),
-                    api_key=_youtube_api_key(),
-                )
-            except Exception as e:
-                st.session_state.entertainment_results = []
-                st.error(f"Search failed: {e}")
-
-    with st.expander("Paste a YouTube link"):
-        pasted = st.text_input("YouTube URL or video ID", placeholder="https://youtube.com/watch?v=…")
-        if st.button("Play link", use_container_width=True) and pasted.strip():
-            vid = extract_video_id(pasted.strip())
-            if not vid:
-                st.error("Could not read that YouTube link")
-            else:
-                _play_track(vid, pasted.strip())
-                st.rerun()
-
-    results = st.session_state.entertainment_results
-    if st.session_state.entertainment_query and not results:
-        st.caption("No results — try another search.")
-    elif results:
-        st.subheader("Results")
-        for i, track in enumerate(results):
-            meta = " · ".join(p for p in [track.get("channel"), track.get("duration")] if p)
-            with st.container(border=True):
-                st.markdown(
-                    f"""<div class="nj-music-result">
-                        <div class="nj-music-title">{html.escape(track["title"])}</div>
-                        <div class="nj-music-meta">{html.escape(meta)}</div>
-                    </div>""",
-                    unsafe_allow_html=True,
-                )
-                if st.button("Play ▶", key=f"play_{track['video_id']}_{i}", use_container_width=True, type="primary"):
-                    _play_track(track["video_id"], track["title"])
-                    st.rerun()
+                st.link_button("WhatsApp", whatsapp_url(inv), key=f"wa_{room['code']}", use_container_width=True)
+            with link_col:
+                if st.button("Copy link", key=f"cp_{room['code']}", use_container_width=True):
+                    st.session_state.copied_invite = f"{app_base_url()}/?room={room['code']}"
+                    st.toast("Link copied to box below")
+    if st.session_state.get("copied_invite"):
+        st.code(st.session_state.copied_invite)
 
 
 def render_room() -> None:
@@ -440,18 +384,11 @@ def render_room() -> None:
         archived = room.get("is_archived")
         if archived:
             st.warning("Wrapped up — read-only for 24h")
+            render_recap(room)
 
         st.markdown(f"## {room['title']}")
-        inv = build_invite_text(room["title"], code, room.get("location"), app_base_url())
-        st.markdown(
-            f'<div class="nj-share-strip">{code_pill(code, large=True)}</div>',
-            unsafe_allow_html=True,
-        )
-        share1, share2 = st.columns(2, gap="small")
-        share1.link_button("Share on WhatsApp", whatsapp_url(inv), use_container_width=True)
-        with share2.expander("Copy invite"):
-            st.text(inv)
-            st.caption("Select the text above to copy manually.")
+        render_invite_strip(code, room)
+        render_playlist_bar(code, room, archived)
 
         cd = get_countdown(room.get("scheduled_at"))
         if cd:
@@ -461,33 +398,9 @@ def render_room() -> None:
         if check_new_messages(code, msg_count):
             st.toast("💬 New message!", icon="💬")
 
-        # Pull-up board
-        st.markdown("**Who's pulling up**")
-        for m in room["members"]:
-            st.markdown(
-                f'<div class="nj-status-card"><strong>{m["name"]}</strong> '
-                f'{STATUS_LABELS.get(m.get("status", "here"), "")}</div>',
-                unsafe_allow_html=True,
-            )
-
-        if is_admin():
-            st.info("🛡️ Admin view")
-            if not is_member(room, user() or "Admin") and st.button("Join as admin"):
-                admin_join_room(code, user() or "Admin")
-                st.session_state.user_name = user() or "Admin"
-                st.rerun()
-        elif user() and not is_member(room, user()):
-            pin_val = st.text_input("PIN", max_chars=4, type="password") if room.get("has_pin") else None
-            block = crew_block(st.session_state, user())
-            if block:
-                st.caption(f"Crew block: {block}")
-            if st.button("I'm in 👊", type="primary"):
-                try:
-                    join_room(code, user(), pin=pin_val, block=block)
-                    add_crew(st.session_state, user(), block)
-                    st.rerun()
-                except Exception as e:
-                    st.error(str(e))
+        if render_join_panel(code, room):
+            if not user():
+                st.info("Set your name in the sidebar to join")
             return
 
         if not can_use_room(room):
@@ -498,13 +411,7 @@ def render_room() -> None:
 
         read_only = archived or (is_admin() and not is_member(room, user() or "Admin"))
 
-        if not read_only and is_member(room, user()):
-            st.caption("Your status")
-            cols = st.columns(3)
-            for col, (k, lbl) in zip(cols, STATUS_LABELS.items()):
-                if col.button(lbl, key=f"st_{k}"):
-                    update_status(code, user(), k)
-                    st.rerun()
+        render_pullup_board(code, room, read_only)
 
         if is_host(room, user()) and not read_only:
             with st.expander("Host controls"):
@@ -512,64 +419,22 @@ def render_room() -> None:
                 if others and st.button("Pass host"):
                     transfer_host(code, user(), others[0])
                     st.rerun()
-                if st.button("Wrap up"):
-                    end_room(code, user(), permanent=False)
+                if st.button("Wrap up sesh"):
+                    recap = end_room(code, user(), permanent=False)
+                    st.session_state.last_wrap_recap = recap or ""
                     go("home")
                     st.rerun()
 
-        tabs = st.tabs(["Yap 💬", "Grab list 🛒", "The tab 💸", "Boys 👊"])
+        tabs = st.tabs(["Yap 💬", "Grab list 🛒", "The tab 💸", "Entertainment 🎵", "Boys 👊"])
         with tabs[0]:
-            for msg in room["messages"]:
-                if msg.get("type") == "system":
-                    st.caption(f"● {msg['content']}")
-                else:
-                    st.markdown(f"**{msg['author']}:** {msg['content']}")
-                    if is_admin() and st.button("🗑️ del", key=f"dm_{msg['id']}"):
-                        admin_delete_message(msg["id"])
-                        st.rerun()
-            if not read_only:
-                text = st.chat_input("Say something...")
-                if text:
-                    post_message(code, user(), text)
-                    st.rerun()
-
+            render_chat_tab(code, room, read_only)
         with tabs[1]:
-            for item in room["checklist"]:
-                st.markdown(f"{'✅' if item.get('claimed_by') else '⬜'} {item['item']} {item.get('claimed_by') or ''}")
-                if not read_only and not item.get("claimed_by") and st.button("Claim", key=f"c_{item['id']}"):
-                    claim_checklist(code, item["id"], user())
-                    st.rerun()
-            if not read_only:
-                ni = st.text_input("Add item", key="ni")
-                if st.button("Add") and ni.strip():
-                    add_checklist_item(code, ni)
-                    st.rerun()
-
+            render_grab_tab(code, room, read_only)
         with tabs[2]:
-            split = room["split"]
-            st.metric("Total", f"₹{split['total']:,.0f}")
-            st.metric("Per head", f"₹{split['perPerson']:,.0f}")
-            for t in split["settleUp"]:
-                st.markdown(f"**{t['from']}** → **{t['to']}**: ₹{t['amount']:,.0f}")
-                if st.button(f"Copy UPI remind {t['from']}", key=f"upi_{t['from']}_{t['to']}"):
-                    st.code(upi_reminder(t["from"], t["amount"], room["title"]))
-            for exp in room["expenses"]:
-                st.markdown(f"**{exp['description']}** — ₹{exp['amount']:,.0f} by {exp['paid_by']}")
-                if exp.get("receipt_data"):
-                    st.image(base64.b64decode(exp["receipt_data"]), width=200)
-            if not read_only:
-                with st.form("exp"):
-                    d = st.text_input("What")
-                    a = st.number_input("₹", min_value=1.0, step=50.0)
-                    rc = st.file_uploader("Receipt (optional)", type=["png", "jpg", "jpeg"])
-                    if st.form_submit_button("Log"):
-                        rdata = None
-                        if rc:
-                            rdata = base64.b64encode(rc.read()).decode("ascii")
-                        add_expense(code, d, a, user(), rdata)
-                        st.rerun()
-
+            render_expense_tab(code, room, read_only)
         with tabs[3]:
+            render_entertainment_tab(code, room, read_only)
+        with tabs[4]:
             for m in room["members"]:
                 st.markdown(f"**{m['name']}** {STATUS_LABELS.get(m.get('status', 'here'), '')}")
                 if is_admin() and st.button(f"Kick {m['name']}", key=f"kick_{m['name']}"):
@@ -582,7 +447,8 @@ def render_room() -> None:
 def render_sellers() -> None:
     st.header("The Plugs 🔌")
     sellers = list_sellers()
-    st.markdown(f"**{sum(1 for s in sellers if s['available'])}** / **{len(sellers)}** stocked")
+    stocked = sum(1 for s in sellers if s["available"])
+    st.markdown(f"**{stocked}** / **{len(sellers)}** stocked · auto-dry after 6h")
 
     with st.expander("🔔 Notify when block is stocked"):
         if user():
@@ -599,28 +465,44 @@ def render_sellers() -> None:
             st.caption("Set a name to watch blocks")
 
     own = next((s for s in sellers if user() and names_match(s["name"], user())), None)
-    if not own:
+    if own:
+        st.subheader("Your listing")
+        with st.container(border=True):
+            st.markdown(f"### {own['name']} — {'Stocked 💨' if own['available'] else 'Dry'}")
+            if own.get("stocked_at") and own["available"]:
+                st.caption(f"Stocked since {format_time_ist(own['stocked_at'])}")
+            av = st.checkbox("In stock", value=own["available"], key="own_av")
+            note = st.text_area("Note", value=own.get("note") or "", key="own_note")
+            if st.button("Update listing"):
+                update_seller(own["id"], user(), available=av, note=note or None)
+                st.rerun()
+    elif user():
         with st.form("reg"):
             sn = st.text_input("Your name", value=st.session_state.user_name)
             sb = st.selectbox("Block", [""] + HOSTEL_BLOCKS, format_func=lambda x: x or "Pick")
-            sc = st.text_input("Contact")
+            sc = st.text_input("Contact (WhatsApp number)")
             snote = st.text_area("Note")
             sav = st.checkbox("In stock", True)
             if st.form_submit_button("Go live 🌿"):
-                if not sn.strip():
-                    st.error("Enter your name")
-                else:
-                    register_seller(sn.strip(), sb or None, sc or None, sav, snote or None)
-                    st.session_state.user_name = sn.strip()
-                    st.rerun()
+                register_seller(sn.strip(), sb or None, sc or None, sav, snote or None)
+                st.session_state.user_name = sn.strip()
+                st.rerun()
 
     for s in sellers:
         with st.container(border=True):
             st.markdown(f"### {s['name']} — {'Stocked 💨' if s['available'] else 'Dry'}")
+            meta = []
             if s.get("block"):
-                st.caption(s["block"])
+                meta.append(s["block"])
+            if s.get("stocked_at") and s["available"]:
+                meta.append(f"since {format_time_ist(s['stocked_at'])}")
+            if meta:
+                st.caption(" · ".join(meta))
             if s.get("note"):
                 st.write(s["note"])
+            if s.get("contact") and s["available"]:
+                msg = f"Yo {s['name']}, still stocked?"
+                st.link_button("WhatsApp", contact_whatsapp_url(s["contact"], msg), use_container_width=True)
 
 
 def render_admin() -> None:
@@ -690,7 +572,32 @@ def render_feedback() -> None:
                 st.error("Write something")
 
 
+def try_auto_join(code: str) -> None:
+    if not user() or is_admin():
+        return
+    room = get_room(code)
+    if not room or is_member(room, user()):
+        return
+    try:
+        join_room(
+            code,
+            user(),
+            invite_token=st.session_state.get("pending_invite_token"),
+            block=None,
+        )
+    except Exception:
+        pass
+
+
 render_sidebar()
+
+if st.session_state.get("last_wrap_recap"):
+    with st.expander("📋 Last sesh recap", expanded=True):
+        st.text(st.session_state.last_wrap_recap)
+        st.link_button("Share recap", whatsapp_url(st.session_state.last_wrap_recap))
+        if st.button("Dismiss recap"):
+            st.session_state.last_wrap_recap = ""
+            st.rerun()
 
 page = st.session_state.page
 if page == "home":
@@ -699,13 +606,19 @@ elif page == "room":
     render_room()
 elif page == "sellers":
     render_sellers()
-elif page == "entertainment":
-    render_entertainment()
 elif page == "admin":
     render_admin()
 elif page == "feedback":
     render_feedback()
+elif page == "entertainment":
+    go("home")
+    st.rerun()
 
 qp = st.query_params.get("room")
 if qp and isinstance(qp, str):
     go_room(qp.upper())
+    try_auto_join(qp.upper())
+
+inv = st.query_params.get("invite")
+if inv and isinstance(inv, str):
+    st.session_state.pending_invite_token = inv

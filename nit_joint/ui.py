@@ -655,12 +655,96 @@ details[data-testid="stExpander"][open] summary > span:first-child > span:first-
     position: static !important;
 }
 
+/* ===== 20. MOBILE ROOM + CHAT ===== */
+.nj-chat-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-height: 55vh;
+    overflow-y: auto;
+    padding: 0.5rem 0 1rem;
+    margin-bottom: 0.5rem;
+}
+.nj-chat-bubble {
+    max-width: 85%;
+    padding: 0.65rem 0.9rem;
+    border-radius: 18px 18px 18px 4px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--glass-border);
+    align-self: flex-start;
+}
+.nj-chat-own {
+    align-self: flex-end;
+    background: var(--accent-dim);
+    border-color: var(--accent-mid);
+    border-radius: 18px 18px 4px 18px;
+}
+.nj-chat-author {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 0.15rem;
+}
+.nj-chat-text {
+    color: var(--text-primary);
+    font-size: 0.92rem;
+    line-height: 1.4;
+    word-break: break-word;
+}
+.nj-chat-system {
+    text-align: center;
+    color: var(--text-tertiary);
+    font-size: 0.78rem;
+    padding: 0.25rem 0;
+}
+@media (max-width: 768px) {
+    div[data-testid="stTabs"] { margin-bottom: 0.5rem !important; }
+    div[data-testid="stChatInput"] {
+        position: sticky;
+        bottom: 0;
+        z-index: 100;
+        background: rgba(10,10,10,0.95);
+        padding: 0.5rem 0;
+    }
+}
+
+/* ===== 21. ONBOARDING ===== */
+.nj-onboard-card {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    padding: 2rem;
+    max-width: 520px;
+    margin: 1rem auto 2rem;
+    text-align: center;
+}
+
 </style>"""
 )
 
 # ---------------------------------------------------------------------------
 # HTML helpers
 # ---------------------------------------------------------------------------
+
+def chat_bubble(author: str, content: str, *, own: bool = False) -> str:
+    cls = "nj-chat-bubble nj-chat-own" if own else "nj-chat-bubble"
+    return (
+        f'<div class="{cls}">'
+        f'<div class="nj-chat-author">{html.escape(author)}</div>'
+        f'<div class="nj-chat-text">{html.escape(content)}</div>'
+        f"</div>"
+    )
+
+
+def inject_pwa() -> str:
+    """PWA manifest + theme hooks."""
+    return """
+    <link rel="manifest" href="app/static/manifest.json">
+    <meta name="theme-color" content="#0a0a0a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="NIT-JOINT">
+    """
+
 
 def inject_css() -> str:
     """Return the full CSS block for injection."""

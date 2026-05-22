@@ -23,6 +23,13 @@ def init_session() -> None:
         "entertainment_video_id": "",
         "entertainment_now_playing": "",
         "entertainment_results": [],
+        "onboarding_done": False,
+        "onboarding_step": 0,
+        "member_pin_required": False,
+        "pending_invite_token": None,
+        "copied_invite": "",
+        "split_wa": "",
+        "last_wrap_recap": "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:

@@ -110,6 +110,35 @@ def is_starting_soon(scheduled_at: str | None, within_minutes: int = 30) -> bool
     return 0 < diff <= within_minutes * 60
 
 
+def checklist_for_vibes_and_size(vibe_tags: list[str], headcount: int) -> list[str]:
+    items = checklist_for_vibes(vibe_tags)
+    if headcount >= 4:
+        items.extend(["Extra snacks", "More drinks / water"])
+    if headcount >= 6:
+        items.extend(["Backup lighter", "Trash bag"])
+    if headcount >= 8:
+        items.append("Extra cups / plates")
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def grab_list_summary(checklist: list[dict]) -> dict[str, Any]:
+    claimed = [i for i in checklist if i.get("claimed_by")]
+    open_items = [i for i in checklist if not i.get("claimed_by")]
+    return {
+        "total": len(checklist),
+        "claimed": len(claimed),
+        "open": len(open_items),
+        "open_items": [i["item"] for i in open_items],
+        "by_person": {i["claimed_by"]: i["item"] for i in claimed if i.get("claimed_by")},
+    }
+
+
 def active_vibe_filters(rooms: list[dict[str, Any]]) -> list[str]:
     tags = [tag for tag in VIBE_TAGS if any(tag in r.get("vibe_tags", []) for r in rooms)]
     return ["All"] + tags

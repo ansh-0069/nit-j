@@ -9,7 +9,13 @@ from nit_joint.postgres import init_postgres, using_postgres
 from pathlib import Path
 from typing import Any, Iterator
 
-from nit_joint.helpers import checklist_for_vibes, compute_settle_up, generate_code, parse_vibe_tags
+from nit_joint.helpers import (
+    checklist_for_vibes,
+    checklist_for_vibes_and_size,
+    compute_settle_up,
+    generate_code,
+    parse_vibe_tags,
+)
 from nit_joint.time import SQL_NOW_IST, now_ist
 
 DB_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -119,6 +125,34 @@ CREATE TABLE IF NOT EXISTS plug_watch (
   created_at TEXT DEFAULT ({SQL_NOW_IST}),
   UNIQUE(watcher_name, block)
 );
+
+CREATE TABLE IF NOT EXISTS music_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  channel TEXT,
+  added_by TEXT,
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT ({SQL_NOW_IST}),
+  FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS settlement_paid (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id TEXT NOT NULL,
+  from_name TEXT NOT NULL,
+  to_name TEXT NOT NULL,
+  amount REAL NOT NULL,
+  paid INTEGER DEFAULT 0,
+  UNIQUE(room_id, from_name, to_name, amount),
+  FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_pins (
+  name TEXT PRIMARY KEY,
+  pin TEXT NOT NULL
+);
 """
 
 
@@ -146,13 +180,46 @@ def init_db() -> None:
         pass
     with get_conn() as conn:
         conn.executescript(SCHEMA)
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(expenses)").fetchall()]
-        if "receipt_data" not in cols:
-            conn.execute("ALTER TABLE expenses ADD COLUMN receipt_data TEXT")
+        _migrate(conn)
+        _expire_stale_plugs(conn)
         conn.execute(
             f"""DELETE FROM rooms WHERE archived_at IS NOT NULL
                AND datetime(archived_at, '+1 day') < {SQL_NOW_IST}"""
         )
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(expenses)").fetchall()}
+    if "receipt_data" not in cols:
+        conn.execute("ALTER TABLE expenses ADD COLUMN receipt_data TEXT")
+    room_cols = {r[1] for r in conn.execute("PRAGMA table_info(rooms)").fetchall()}
+    for col, ddl in [
+        ("join_mode", "ALTER TABLE rooms ADD COLUMN join_mode TEXT DEFAULT 'open'"),
+        ("invite_token", "ALTER TABLE rooms ADD COLUMN invite_token TEXT"),
+        ("recap_text", "ALTER TABLE rooms ADD COLUMN recap_text TEXT"),
+        ("current_track_id", "ALTER TABLE rooms ADD COLUMN current_track_id TEXT"),
+        ("current_track_title", "ALTER TABLE rooms ADD COLUMN current_track_title TEXT"),
+    ]:
+        if col not in room_cols:
+            conn.execute(ddl)
+    member_cols = {r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()}
+    for col, ddl in [
+        ("eta_minutes", "ALTER TABLE members ADD COLUMN eta_minutes INTEGER"),
+        ("needs_pickup", "ALTER TABLE members ADD COLUMN needs_pickup INTEGER DEFAULT 0"),
+    ]:
+        if col not in member_cols:
+            conn.execute(ddl)
+
+
+PLUG_STALE_HOURS = 6
+
+
+def _expire_stale_plugs(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        f"""UPDATE sellers SET available = 0, stocked_at = NULL
+           WHERE available = 1 AND stocked_at IS NOT NULL
+           AND datetime(stocked_at, '+{PLUG_STALE_HOURS} hours') < {SQL_NOW_IST}"""
+    )
 
 
 def _audit(conn: sqlite3.Connection, action: str, actor: str | None, target: str | None, detail: str | None) -> None:
@@ -308,11 +375,14 @@ def create_room_from_template(template_key: str, host_name: str, location: str |
     return create_room(
         title=tpl["title"],
         host_name=host_name,
-        location=location,
+        location=location or tpl.get("location_hint"),
         description=tpl.get("description"),
         vibe_tags=tpl.get("vibe_tags"),
         join_pin=join_pin,
         scheduled_at=scheduled_at,
+        playlist_url=tpl.get("playlist_url"),
+        join_mode=tpl.get("join_mode", "open"),
+        extra_checklist=tpl.get("extra_checklist"),
     )
 
 
@@ -343,10 +413,31 @@ def get_room_by_code(conn: sqlite3.Connection, code: str) -> dict[str, Any] | No
     return _row_dict(row)
 
 
+def _compute_split(expenses: list[dict], member_names: list[str]) -> dict[str, Any]:
+    total = sum(e["amount"] for e in expenses)
+    per_person = total / len(member_names) if member_names else 0
+    paid_map: dict[str, float] = {}
+    for e in expenses:
+        paid_map[e["paid_by"]] = paid_map.get(e["paid_by"], 0) + e["amount"]
+    balances = []
+    for name in member_names:
+        paid = paid_map.get(name, 0)
+        balances.append({"name": name, "paid": round(paid, 2), "owes": round(per_person - paid, 2)})
+    return {
+        "total": round(total, 2),
+        "perPerson": round(per_person, 2),
+        "memberCount": len(member_names),
+        "balances": balances,
+        "settleUp": compute_settle_up(balances),
+    }
+
+
 def build_room_payload(conn: sqlite3.Connection, room: dict[str, Any]) -> dict[str, Any]:
     room_id = room["id"]
     members = [dict(r) for r in conn.execute(
-        "SELECT name, joined_at, COALESCE(status, 'here') as status, block FROM members WHERE room_id = ? ORDER BY joined_at",
+        """SELECT name, joined_at, COALESCE(status, 'here') as status, block,
+                  eta_minutes, COALESCE(needs_pickup, 0) as needs_pickup
+           FROM members WHERE room_id = ? ORDER BY joined_at""",
         (room_id,),
     ).fetchall()]
     messages = [dict(r) for r in conn.execute(
@@ -379,6 +470,24 @@ def build_room_payload(conn: sqlite3.Connection, room: dict[str, Any]) -> dict[s
             }
         )
 
+    attendee_names = [m["name"] for m in members if m.get("status") == "here"]
+    all_names = [m["name"] for m in members]
+    split_attendees = _compute_split(expenses, attendee_names)
+    settle_rows = conn.execute(
+        "SELECT from_name, to_name, amount, paid FROM settlement_paid WHERE room_id = ?",
+        (room_id,),
+    ).fetchall()
+    paid_set = {(r["from_name"], r["to_name"], round(r["amount"], 2)) for r in settle_rows if r["paid"]}
+    settle_up = []
+    for t in compute_settle_up(balances):
+        key = (t["from"], t["to"], round(t["amount"], 2))
+        settle_up.append({**t, "paid": key in paid_set})
+
+    music_queue = [dict(r) for r in conn.execute(
+        "SELECT * FROM music_queue WHERE room_id = ? ORDER BY position ASC, id ASC",
+        (room_id,),
+    ).fetchall()]
+
     last_msg = conn.execute(
         "SELECT created_at FROM messages WHERE room_id = ? ORDER BY created_at DESC LIMIT 1",
         (room_id,),
@@ -389,19 +498,26 @@ def build_room_payload(conn: sqlite3.Connection, room: dict[str, Any]) -> dict[s
         "code": room["code"].upper(),
         "vibe_tags": parse_vibe_tags(room.get("vibe_tags")),
         "has_pin": bool(room.get("join_pin")),
+        "join_mode": room.get("join_mode") or "open",
+        "invite_token": room.get("invite_token"),
         "is_archived": bool(room.get("archived_at")),
+        "recap_text": room.get("recap_text"),
+        "current_track_id": room.get("current_track_id"),
+        "current_track_title": room.get("current_track_title"),
         "members": members,
         "messages": messages,
         "checklist": checklist,
         "expenses": expenses,
+        "music_queue": music_queue,
         "last_message_at": last_msg["created_at"] if last_msg else None,
         "split": {
             "total": round(total, 2),
             "perPerson": round(per_person, 2),
             "memberCount": len(members),
             "balances": balances,
-            "settleUp": compute_settle_up(balances),
+            "settleUp": settle_up,
         },
+        "split_attendees": split_attendees,
     }
 
 
@@ -499,15 +615,22 @@ def create_room(
     vibe_tags: list[str] | None = None,
     join_pin: str | None = None,
     scheduled_at: str | None = None,
+    playlist_url: str | None = None,
+    join_mode: str = "open",
+    extra_checklist: list[str] | None = None,
 ) -> dict[str, Any]:
     tags = vibe_tags or []
+    if join_mode == "pin" and not join_pin:
+        raise ValueError("PIN required for PIN-only rooms")
+    invite_token = str(uuid.uuid4())[:12] if join_mode == "invite" else None
     with get_conn() as conn:
         codes = {r[0] for r in conn.execute("SELECT code FROM rooms").fetchall()}
         room_id = str(uuid.uuid4())[:12]
         code = generate_code(codes)
         conn.execute(
-            f"""INSERT INTO rooms (id, code, title, host_name, location, description, vibe_tags, join_pin, scheduled_at, last_activity_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, {SQL_NOW_IST})""",
+            f"""INSERT INTO rooms (id, code, title, host_name, location, description, vibe_tags,
+               join_pin, scheduled_at, playlist_url, join_mode, invite_token, last_activity_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {SQL_NOW_IST})""",
             (
                 room_id,
                 code,
@@ -518,6 +641,9 @@ def create_room(
                 json.dumps(tags) if tags else None,
                 join_pin,
                 scheduled_at,
+                playlist_url,
+                join_mode,
+                invite_token,
             ),
         )
         conn.execute(
@@ -525,7 +651,14 @@ def create_room(
             (room_id, host_name.strip(), "here"),
         )
         _system_message(conn, room_id, f"{host_name.strip()} opened the joint")
-        for item in checklist_for_vibes(tags):
+        items = checklist_for_vibes_and_size(tags, 1)
+        if extra_checklist:
+            items.extend(extra_checklist)
+        seen_items: set[str] = set()
+        for item in items:
+            if item in seen_items:
+                continue
+            seen_items.add(item)
             conn.execute("INSERT INTO checklist (room_id, item) VALUES (?, ?)", (room_id, item))
         room = get_room_by_code(conn, code)
         assert room
@@ -540,7 +673,14 @@ def get_room(code: str) -> dict[str, Any] | None:
         return build_room_payload(conn, room)
 
 
-def join_room(code: str, name: str, pin: str | None = None, block: str | None = None) -> dict[str, Any]:
+def join_room(
+    code: str,
+    name: str,
+    pin: str | None = None,
+    block: str | None = None,
+    invite_token: str | None = None,
+    member_pin: str | None = None,
+) -> dict[str, Any]:
     _check_banned(name)
     with get_conn() as conn:
         room = get_room_by_code(conn, code)
@@ -548,8 +688,29 @@ def join_room(code: str, name: str, pin: str | None = None, block: str | None = 
             raise ValueError("Room not found")
         if room.get("archived_at"):
             raise ValueError("This sesh is wrapped up")
-        if room.get("join_pin") and room["join_pin"] != (pin or "").strip():
-            raise ValueError("Wrong PIN")
+
+        join_mode = room.get("join_mode") or "open"
+        if join_mode == "pin" or room.get("join_pin"):
+            if room.get("join_pin") and room["join_pin"] != (pin or "").strip():
+                raise ValueError("Wrong PIN")
+        if join_mode == "crew_only":
+            crew_row = conn.execute(
+                "SELECT 1 FROM trusted_crew WHERE lower(name) = lower(?)",
+                (name.strip(),),
+            ).fetchone()
+            if not crew_row:
+                raise ValueError("Trusted crew only — ask the host to add you")
+        if join_mode == "invite":
+            token = (invite_token or "").strip()
+            if not token or token != (room.get("invite_token") or ""):
+                raise ValueError("Valid invite link required")
+
+        pin_row = conn.execute(
+            "SELECT pin FROM user_pins WHERE lower(name) = lower(?)",
+            (name.strip(),),
+        ).fetchone()
+        if pin_row and pin_row["pin"] != (member_pin or "").strip():
+            raise ValueError("Wrong member PIN for this name")
 
         room_id = room["id"]
         trimmed = name.strip()
@@ -592,7 +753,7 @@ def post_message(code: str, author: str, content: str) -> None:
         _touch_room(conn, room["id"])
 
 
-def update_status(code: str, name: str, status: str) -> None:
+def update_status(code: str, name: str, status: str, eta_minutes: int | None = None, needs_pickup: bool | None = None) -> None:
     labels = {
         "on_my_way": "is on the way 🚶",
         "here": "pulled up ✅",
@@ -602,13 +763,22 @@ def update_status(code: str, name: str, status: str) -> None:
         room = get_room_by_code(conn, code)
         if not room or room.get("archived_at"):
             raise ValueError("Cannot update status")
-        result = conn.execute(
-            "UPDATE members SET status = ? WHERE room_id = ? AND name = ?",
-            (status, room["id"], name.strip()),
+        pickup_val = None
+        if needs_pickup is not None:
+            pickup_val = 1 if needs_pickup else 0
+        conn.execute(
+            """UPDATE members SET status = ?,
+               eta_minutes = COALESCE(?, eta_minutes),
+               needs_pickup = COALESCE(?, needs_pickup)
+               WHERE room_id = ? AND name = ?""",
+            (status, eta_minutes, pickup_val, room["id"], name.strip()),
         )
-        if result.rowcount == 0:
-            raise ValueError("Member not found")
-        _system_message(conn, room["id"], f"{name.strip()} {labels[status]}")
+        msg = f"{name.strip()} {labels[status]}"
+        if eta_minutes is not None and status == "on_my_way":
+            msg += f" · ETA {eta_minutes}m"
+        if needs_pickup:
+            msg += " · needs pickup 🚪"
+        _system_message(conn, room["id"], msg)
 
 
 def claim_checklist(code: str, item_id: int, claimed_by: str | None) -> None:
@@ -678,21 +848,26 @@ def update_playlist(code: str, url: str | None) -> None:
             _system_message(conn, room["id"], "Playlist link updated 🎵")
 
 
-def end_room(code: str, actor_name: str, permanent: bool = False) -> None:
+def end_room(code: str, actor_name: str, permanent: bool = False) -> str | None:
+    from nit_joint.recap import build_recap
+
     with get_conn() as conn:
         room = get_room_by_code(conn, code)
         if not room:
             raise ValueError("Room not found")
         if room["host_name"].strip().lower() != actor_name.strip().lower():
             raise ValueError("Only the host can end this sesh")
+        payload = build_room_payload(conn, room)
+        recap = build_recap(payload)
         if permanent:
             conn.execute("DELETE FROM rooms WHERE id = ?", (room["id"],))
         else:
             conn.execute(
-                f"UPDATE rooms SET archived_at = {SQL_NOW_IST} WHERE id = ?",
-                (room["id"],),
+                f"UPDATE rooms SET archived_at = {SQL_NOW_IST}, recap_text = ? WHERE id = ?",
+                (recap, room["id"]),
             )
             _system_message(conn, room["id"], f"{actor_name.strip()} wrapped up the sesh — read-only for 24h")
+        return recap
 
 
 def transfer_host(code: str, actor_name: str, new_host: str) -> None:
@@ -769,3 +944,128 @@ def delete_seller(seller_id: int, actor_name: str) -> None:
         if seller["name"].lower() != actor_name.strip().lower():
             raise ValueError("You can only remove your own listing")
         conn.execute("DELETE FROM sellers WHERE id = ?", (seller_id,))
+
+
+def set_user_pin(name: str, pin: str) -> None:
+    if not pin or len(pin) < 4:
+        raise ValueError("PIN must be at least 4 characters")
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO user_pins (name, pin) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET pin = excluded.pin",
+            (name.strip(), pin.strip()),
+        )
+
+
+def has_user_pin(name: str) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM user_pins WHERE lower(name) = lower(?)",
+            (name.strip(),),
+        ).fetchone()
+        return row is not None
+
+
+def add_music_queue(code: str, video_id: str, title: str, channel: str, added_by: str) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room or room.get("archived_at"):
+            raise ValueError("Cannot update queue")
+        pos = conn.execute(
+            "SELECT COALESCE(MAX(position), 0) + 1 FROM music_queue WHERE room_id = ?",
+            (room["id"],),
+        ).fetchone()[0]
+        conn.execute(
+            """INSERT INTO music_queue (room_id, video_id, title, channel, added_by, position)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (room["id"], video_id, title, channel, added_by.strip(), pos),
+        )
+        if not room.get("current_track_id"):
+            conn.execute(
+                "UPDATE rooms SET current_track_id = ?, current_track_title = ? WHERE id = ?",
+                (video_id, title, room["id"]),
+            )
+        _system_message(conn, room["id"], f"{added_by.strip()} queued {title} 🎵")
+
+
+def remove_music_queue_item(code: str, item_id: int) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room:
+            raise ValueError("Room not found")
+        conn.execute("DELETE FROM music_queue WHERE id = ? AND room_id = ?", (item_id, room["id"]))
+
+
+def play_next_track(code: str) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room:
+            raise ValueError("Room not found")
+        current = room.get("current_track_id")
+        if current:
+            conn.execute(
+                "DELETE FROM music_queue WHERE room_id = ? AND video_id = ?",
+                (room["id"], current),
+            )
+        nxt = conn.execute(
+            "SELECT video_id, title FROM music_queue WHERE room_id = ? ORDER BY position ASC, id ASC LIMIT 1",
+            (room["id"],),
+        ).fetchone()
+        if nxt:
+            conn.execute(
+                "UPDATE rooms SET current_track_id = ?, current_track_title = ? WHERE id = ?",
+                (nxt["video_id"], nxt["title"], room["id"]),
+            )
+        else:
+            conn.execute(
+                "UPDATE rooms SET current_track_id = NULL, current_track_title = NULL WHERE id = ?",
+                (room["id"],),
+            )
+
+
+def set_now_playing(code: str, video_id: str | None, title: str | None) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room or room.get("archived_at"):
+            raise ValueError("Cannot update player")
+        conn.execute(
+            "UPDATE rooms SET current_track_id = ?, current_track_title = ? WHERE id = ?",
+            (video_id or None, title or None, room["id"]),
+        )
+
+
+def mark_settlement_paid(code: str, from_name: str, to_name: str, amount: float, paid: bool = True) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room:
+            raise ValueError("Room not found")
+        conn.execute(
+            """INSERT INTO settlement_paid (room_id, from_name, to_name, amount, paid)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(room_id, from_name, to_name, amount)
+               DO UPDATE SET paid = excluded.paid""",
+            (room["id"], from_name, to_name, amount, int(paid)),
+        )
+
+
+def refresh_checklist_suggestions(code: str) -> None:
+    with get_conn() as conn:
+        room = get_room_by_code(conn, code)
+        if not room or room.get("archived_at"):
+            raise ValueError("Cannot refresh checklist")
+        count = conn.execute(
+            "SELECT COUNT(*) FROM members WHERE room_id = ?",
+            (room["id"],),
+        ).fetchone()[0]
+        tags = parse_vibe_tags(room.get("vibe_tags"))
+        existing = {
+            r["item"]
+            for r in conn.execute("SELECT item FROM checklist WHERE room_id = ?", (room["id"],)).fetchall()
+        }
+        for item in checklist_for_vibes_and_size(tags, count):
+            if item not in existing:
+                conn.execute("INSERT INTO checklist (room_id, item) VALUES (?, ?)", (room["id"], item))
+        _system_message(conn, room["id"], "Grab list refreshed for crew size 🛒")
+
+
+def reassign_checklist(code: str, item_id: int, new_person: str | None) -> None:
+    claim_checklist(code, item_id, new_person)
