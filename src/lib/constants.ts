@@ -1,4 +1,4 @@
-export const HOSTEL_BLOCKS = ['MBH A', 'MBH B', 'MBH F', '7E'] as const
+export const HOSTEL_BLOCKS = ['MBH A', 'MBH B', 'MBH F', '7E', 'BH 6'] as const
 
 export const VIBE_TAGS = ['Chill', 'Movie', 'Birthday', 'Pre-game', 'Late night', 'Exam break'] as const
 

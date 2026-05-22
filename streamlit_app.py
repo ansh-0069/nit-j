@@ -399,20 +399,37 @@ elif st.session_state.page == "sellers":
 
     own = next((s for s in sellers if user() and names_match(s["name"], user())), None)
 
-    if not own and user():
-        with st.expander("List me up 🌿"):
-            with st.form("register_seller"):
-                s_block = st.selectbox("Block", [""] + HOSTEL_BLOCKS, format_func=lambda x: x or "Pick")
-                s_contact = st.text_input("Contact (WhatsApp / Telegram)")
-                s_note = st.text_area("What's available?")
-                s_avail = st.checkbox("In stock", value=True)
-                if st.form_submit_button("Go live"):
+    if not own:
+        st.subheader("You a plug?")
+        st.caption("Get on the board — no account needed, just fill this in")
+        with st.form("register_seller"):
+            s_name = st.text_input(
+                "Your name",
+                value=st.session_state.user_name,
+                placeholder="How people know you",
+            )
+            s_block = st.selectbox("Block", [""] + HOSTEL_BLOCKS, format_func=lambda x: x or "Pick")
+            s_contact = st.text_input("Contact (WhatsApp / Telegram)")
+            s_note = st.text_area("What's available?")
+            s_avail = st.checkbox("In stock", value=True)
+            if st.form_submit_button("Go live on board 🌿", type="primary"):
+                if not s_name.strip():
+                    st.error("Enter your name in the form above")
+                else:
                     try:
-                        register_seller(user(), s_block or None, s_contact or None, s_avail, s_note or None)
+                        st.session_state.user_name = s_name.strip()
+                        register_seller(
+                            s_name.strip(),
+                            s_block or None,
+                            s_contact or None,
+                            s_avail,
+                            s_note or None,
+                        )
                         st.success("You're on the board")
                         st.rerun()
                     except Exception as e:
                         st.error(str(e))
+        st.divider()
 
     if not sellers:
         st.info("No sellers listed yet")

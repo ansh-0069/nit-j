@@ -1,4 +1,4 @@
-HOSTEL_BLOCKS = ["MBH A", "MBH B", "MBH F", "7E"]
+HOSTEL_BLOCKS = ["MBH A", "MBH B", "MBH F", "7E", "BH 6"]
 VIBE_TAGS = ["Chill", "Movie", "Birthday", "Pre-game", "Late night", "Exam break"]
 
 VIBE_CHECKLIST_PRESETS = {

@@ -157,7 +157,7 @@ export default function Sellers() {
     e.preventDefault()
     const sellerName = name.trim() || user.trim()
     if (!sellerName) {
-      toast.error('Enter your name first')
+      toast.error('Enter your name in the form')
       return
     }
     saveUser(sellerName)
