@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import io
 from datetime import timedelta
 
 import streamlit as st
@@ -70,18 +69,6 @@ init_session()
 
 st.set_page_config(page_title="NIT-JOINT", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
 st.markdown(inject_css(), unsafe_allow_html=True)
-
-
-def render_qr(code: str) -> None:
-    try:
-        import qrcode
-
-        img = qrcode.make(f"{app_base_url()}/?room={code.upper()}")
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        st.image(buf.getvalue(), caption=f"Scan to join {code}", width=160)
-    except Exception:
-        st.caption(f"Link: {app_base_url()}/?room={code.upper()}")
 
 
 def check_new_messages(room_code: str, count: int) -> bool:
@@ -240,15 +227,13 @@ def render_home() -> None:
                 st.caption(f"⏰ {cd}" + (" · **Starting soon!**" if soon else ""))
             if room.get("last_activity_at"):
                 st.caption(f"Active · {format_time_ist(room['last_activity_at'])}")
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3 = st.columns(3)
             if c1.button("Enter", key=f"e_{room['code']}"):
                 go_room(room["code"])
                 st.rerun()
             inv = build_invite_text(room["title"], room["code"], room.get("location"), app_base_url())
             c2.code(inv, language=None)
             c3.link_button("WhatsApp", whatsapp_url(inv), key=f"wa_{room['code']}")
-            with c4:
-                render_qr(room["code"])
 
 
 def render_room() -> None:
@@ -278,7 +263,6 @@ def render_room() -> None:
             st.toast("Invite copied")
             st.code(inv)
         sc3.link_button("WhatsApp share", whatsapp_url(inv))
-        render_qr(code)
 
         cd = get_countdown(room.get("scheduled_at"))
         if cd:

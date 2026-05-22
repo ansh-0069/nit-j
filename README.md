@@ -24,7 +24,7 @@ Copy `.streamlit/secrets.toml.example` → `.streamlit/secrets.toml` and set you
 
 | Area | What's included |
 |------|-----------------|
-| **Rooms** | Create/join, PIN, vibe templates, scheduled countdown, QR + WhatsApp share |
+| **Rooms** | Create/join, PIN, vibe templates, scheduled countdown, WhatsApp share |
 | **Chat** | Live refresh toggle, new-message toast, rate limits |
 | **Grab list** | Vibe-based presets, claim items |
 | **The tab** | Split + settle-up, UPI reminder copy, receipt photo upload |

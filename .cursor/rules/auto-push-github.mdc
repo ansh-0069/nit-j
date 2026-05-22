@@ -1,0 +1,29 @@
+---
+description: Auto-commit and push every code update to GitHub
+alwaysApply: true
+---
+
+# Auto-push to GitHub
+
+After completing any code or config change in this repo, commit and push to GitHub without waiting for a separate request.
+
+## Workflow
+
+1. Finish the requested change and verify it works when practical.
+2. Run `git status` and `git diff` to review what will be committed.
+3. Stage only relevant files — never commit secrets (`.env`, credentials, `.streamlit/secrets.toml`).
+4. Write a concise commit message focused on why the change was made.
+5. Commit, then `git push origin HEAD` (or the current branch).
+6. Confirm with `git status` that the working tree is clean and the push succeeded.
+
+## Constraints
+
+- Do not use destructive git commands (`push --force`, hard reset) unless explicitly asked.
+- Do not skip hooks or amend commits unless the user rules for those cases apply.
+- If there are no changes to commit, do not create an empty commit.
+- If push fails (auth, conflicts), report the error and what the user needs to do.
+
+## When to skip auto-push
+
+- User explicitly says not to commit or push.
+- Change is exploratory, incomplete, or the user asked for review only.
